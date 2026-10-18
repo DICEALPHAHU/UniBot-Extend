@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 上游文档
+    url: https://github.com/MineJPGcraft/UniBot
+    about: 框架本体、WebUI、扩展系统的使用说明以官方文档为准
+  - name: 💬 使用讨论
+    url: https://github.com/MineJPGcraft/UniBot/discussions
+    about: 配置 / 部署 / 玩法类问题建议先在上游讨论区搜索

@@ -48,7 +48,7 @@ sync_command_panels = true
 sync_all_qq_message = true
 
 # 是否转发所有在服务器内发送的消息到 QQ 群。
-sync_all_game_message = false
+sync_all_game_message = true
 
 # 是否把服务器内的消息转发到其他的服务器。
 sync_message_between_servers = false
@@ -90,9 +90,10 @@ enabled = true
 # 启用后机器人将会把所发送的消息渲染为图片，但需额外配置，且响应速度会变慢。
 mode = false
 # 渲染引擎
-renderer = ""
+renderer = "Html2Pic"
 # 当前模板包：template 扩展的 id。
 # "Default" = 内置默认模板扩展提供的模板，可被其他模板扩展替换（热生效）。
 template = "Default"
 # 自定义字体文件路径（如 /path/to/Font.ttf）。
 # font = ""
+font = ""

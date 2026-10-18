@@ -1,23 +1,44 @@
-**/.DS_Store
-**/__pycache__
-BotServer-v*.*.*.zip
-.idea
-Test.py
-.DS_Store
-BotServer/Plugins/.vscode/settings.json
+# ===== 依赖 / 虚拟环境 =====
 .venv/
-uv.lock
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
 
-# 项目运行产生文件以及文档
-Data/
-Logs/
-# Extensions/Example/
-Config/Extensions/
+# ===== 敏感配置：绝对不要提交 =====
+# .env 里放着 OneBot / Minecraft / UAPI / B站 等真实 Token 与服务器地址，
+# 只提交 .env.example 模板，本地复制成 .env 后再填写。
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# ===== 运行期生成的数据（含账号、密钥、玩家记录、统计） =====
+/Data/
+/Logs/
+/Temp/
+/Config/Extensions/
+
+# ===== 运行时自动下载的资源（首次启动会自行获取，无需提交） =====
 /WebUi/
 /Extensions/
+
+# ===== 本地开发工具（含本机绝对路径与登录口令） =====
+/Scripts/.studio/
 /.studio/
-.docs/
-.dist/
-.**.md
-AGENT.md
-!.github
+
+# ===== 打包产物 / 依赖锁文件 =====
+Plugins.zip
+BotServer-*.zip
+uv.lock
+
+# ===== 编辑器 / 系统 =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log

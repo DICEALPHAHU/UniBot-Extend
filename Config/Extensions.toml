@@ -28,3 +28,5 @@ enabled = true
 [Server]
 enabled = true
 
+[Html2Pic]
+enabled = false

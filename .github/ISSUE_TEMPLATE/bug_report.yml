@@ -1,0 +1,87 @@
+name: 🐛 问题反馈
+description: 报告一个 Bug 或运行异常
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！提交前请先确认：
+
+        1. 已搜索过 [现有 Issue](https://github.com/DICEALPHAHU/UniBot/issues)（如果有同名问题请直接补充评论）；
+        2. 问题出在**上游原有功能**时，可以先看看 [上游仓库](https://github.com/MineJPGcraft/UniBot) 是否已有说明；
+        3. 贴日志前请**先脱敏**：删掉 Token、Cookie、服务器地址、群号、QQ 号等信息。
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 问题描述
+      description: 发生了什么？期望的结果是什么？
+      placeholder: |
+        例如：群里发送 /help 后没有任何回复，日志里出现 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 越具体越好，能稳定复现的步骤最有价值。
+      placeholder: |
+        1. 在群里发送 xxx
+        2. 观察 xxx
+        3. 出现 xxx
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 在 `pyproject.toml` 的 `version` 字段，或 WebUI 页面底部查看。
+      placeholder: "v1.0.6-hu.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deploy
+    attributes:
+      label: 部署方式
+      options:
+        - Docker（docker-compose / docker run）
+        - Windows 直接运行（Start.bat）
+        - Linux 直接运行（uv run）
+        - 其他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: adapter
+    attributes:
+      label: 涉及的聊天适配器
+      multiple: true
+      options:
+        - OneBot V11（NapCat / LLOneBot 等）
+        - Minecraft
+        - QQ 官方机器人
+        - 其他
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 请粘贴 `Logs/` 目录下最近的日志片段（记得脱敏）。
+      render: text
+      placeholder: |
+        2026-10-18 18:23:43 [SUCCESS] NoneBot | Succeeded to load plugin ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: 相关配置（可选）
+      description: 与问题相关的 `Config.toml` / `.env` 片段，**务必删掉 Token、群号、地址**。
+      render: text
+    validations:
+      required: false
