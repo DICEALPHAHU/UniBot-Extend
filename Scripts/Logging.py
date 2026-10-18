@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -86,9 +87,37 @@ def resolve_module_alias(module_name: str | None) -> str:
     return module_name.split('.', 1)[0].capitalize()
 
 
+# 日志脱敏规则：命中的内容在任何 sink（控制台 / 文件日志 / WebUI 推送）里都会被替换。
+# 目的是让 .env 中的密钥即使被 NoneBot 的「Loaded Config」转储、报错信息或插件日志
+# 带进来，也不会以明文落盘。新增密钥类型时在这里补一条即可。
+REDACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # uapis.cn Token（形如 uapi-xxxxxxxx）
+    (re.compile(r'uapi-[A-Za-z0-9_\-]{6,}'), 'uapi-***'),
+    # B站 Cookie 关键字段
+    (
+        re.compile(
+            r'(?i)\b(SESSDATA|bili_jct|DedeUserID|DedeUserID__ckMd5|buvid3|buvid4|SESSDATA_Expires)=([^;\s"\']+)'
+        ),
+        r'\1=***',
+    ),
+)
+
+
+def redact_secrets(text: str) -> str:
+    """把文本里的已知密钥模式替换为占位符（未命中时原样返回）。"""
+    if not text:
+        return text
+    for pattern, replacement in REDACT_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 def _patch_record(record: Record) -> None:
-    """将完整模块名美化为短展示名，供格式渲染。"""
+    """将完整模块名美化为短展示名，并对消息内容做密钥脱敏。"""
     record['name'] = resolve_module_alias(record['name'])
+    message = record['message']
+    if message:
+        record['message'] = redact_secrets(message)
 
 
 def console_format(record: Record) -> str:
@@ -104,9 +133,16 @@ def console_format(record: Record) -> str:
 
 
 def file_format(record: Record) -> str:
-    """文件日志格式：无色彩，保留模块定位信息。"""
+    """文件日志格式：无色彩，保留模块定位信息。
+
+    这里把 message 直接内联进格式串（而不是用 {message} 占位符），因为 NoneBot
+    初始化时会用自带的 patcher 覆盖我们的 patcher，`Loaded Config` 这类转储
+    恰好发生在那之后 —— 只有「格式化前先替换」才能保证密钥不会写进文件。
+    内联时需把花括号转义，避免消息里的 {} 被当成格式占位符。
+    """
     name = 'NoneBot' if record['name'] == 'nonebot' else record['name']
-    return f'{{time:MM-DD HH:mm:ss}} [{{level}}] {name} | {{message}}\n{{exception}}'
+    message = redact_secrets(record['message']).replace('{', '{{').replace('}', '}}')
+    return f'{{time:MM-DD HH:mm:ss}} [{{level}}] {name} | {message}\n{{exception}}'
 
 
 def setup_level_colors() -> None:
