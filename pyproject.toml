@@ -13,6 +13,9 @@ dependencies = [
     "nonebot-adapter-minecraft>=1.8.2",
     "nonebot-plugin-alconna>=0.62.0",
     "nonebot-plugin-uninfo>=0.11.0",
+    "bilibili-api-python>=17.4.2",
+    "opencv-python>=5.0.0.93",
+    "nonebot-adapter-onebot",
 ]
 
 [project.optional-dependencies]
@@ -61,8 +64,19 @@ plugins = [
     { module_name = "Scripts.Plugins.Collector", enabled = true },
     { module_name = "Scripts.Plugins.Events", enabled = true },
     { module_name = "Scripts.Plugins.Token", enabled = true },
+    { module_name = "Plugins.Wife", enabled = true },
+    { module_name = "Plugins.Weather", enabled = true },
+    { module_name = "Plugins.Meal", enabled = true },
+    { module_name = "Plugins.Bili", enabled = true },
+    { module_name = "Plugins.Lots", enabled = true },
+    { module_name = "Plugins.Motou", enabled = true },
+    { module_name = "Plugins.Poke", enabled = true },
+    { module_name = "Plugins.Guessnum", enabled = true },
 ]
 
 [[tool.nonebot.adapters]]
 name = "Minecraft"
 module_name = "nonebot.adapters.minecraft"
+[[tool.nonebot.adapters]]
+name = "OneBot V11"
+module_name = "nonebot.adapters.onebot.v11"
