@@ -11,6 +11,7 @@
 
 import asyncio
 import difflib
+import re
 import time
 import urllib.parse
 
@@ -40,6 +41,11 @@ WIKI_CACHE_TTL = 600
 WIKI_CACHE_MAX = 200
 # 本地近似标题匹配的相似度阈值（0~1），太低容易匹配到无关词条
 WIKI_FUZZY_CUTOFF = 0.72
+# 标题与查询的匹配分：低于它说明只是全文命中（容易召回版本日志之类的页面），
+# 需要改试拼写建议或截断问句。
+WIKI_GOOD_SCORE = 40
+# 中文问句里的疑问词：命中后取它前面的部分当关键词重试（「铜有哪些变种」->「铜」）
+WIKI_QUESTION_MARKERS = ('有哪些', '有什么', '是什么', '有什么用', '怎么获得', '怎么用', '如何获得', '如何', '为什么')
 
 # priority=0：必须小于 Scripts.Plugins.Events 的 priority=1（它以 block=True 截断事件）。
 wiki_cmd = on_command('wiki', priority=0, block=True)
@@ -79,26 +85,76 @@ async def _request(client: AsyncClient, params: dict) -> dict:
     return response.json()
 
 
-async def _search_page(client: AsyncClient, keyword: str) -> dict | None:
-    """按关键词搜索并带出首条结果的简介与缩略图；无结果返回 None。"""
+def _normalize(text: str) -> str:
+    """去掉空白并转小写，用于比较标题与关键词。"""
+    return ''.join((text or '').split()).lower()
+
+
+def _strip_parenthetical(text: str) -> str:
+    """去掉括号里的内容：「力量（附魔）」->「力量」。"""
+    return re.sub(r'[（(][^）)]*[）)]', '', text).strip()
+
+
+def _trim_question(text: str) -> str:
+    """截掉疑问词，留下真正要查的主干：「铜有哪些变种」->「铜」。"""
+    for marker in WIKI_QUESTION_MARKERS:
+        index = text.find(marker)
+        if index > 0:
+            return text[:index].strip('，,。 ?？!！')
+    return ''
+
+
+def pick_best_page(keyword: str, pages: list[dict]) -> tuple[dict | None, float]:
+    """在搜索结果里挑与关键词最贴合的页面，返回 (页面, 匹配分)。
+
+    Wiki 的全文搜索经常把版本日志排在真正词条前面（例如查「力量（附魔）」
+    的第一条是「携带版0.12.1.b11」），所以按标题贴合度重新排一遍；
+    全都不贴合时再退回 Wiki 自己的排序。
+    """
+    if not pages:
+        return None, 0.0
+    query = _normalize(keyword)
+    base = _strip_parenthetical(query) or query
+    best_page, best_score = None, -1.0
+    for page in pages:
+        title = _normalize(page.get('title') or '')
+        rank = page.get('index', 99)
+        if title == query:
+            score = 100.0
+        elif base and title == base:
+            score = 95.0
+        elif base and base in title:
+            score = 80.0
+        elif title and title in query:
+            score = 70.0
+        else:
+            score = 60.0 * difflib.SequenceMatcher(None, base, title).ratio()
+        # 搜索排名只做微弱加权，避免同分时选错
+        score -= rank * 0.5
+        if score > best_score:
+            best_page, best_score = page, score
+    if best_score < WIKI_GOOD_SCORE:
+        return min(pages, key=lambda item: item.get('index', 99)), best_score
+    return best_page, best_score
+
+
+async def _search_best(client: AsyncClient, keyword: str) -> tuple[dict | None, float]:
+    """搜索并挑出最贴合的页面，返回 (页面, 匹配分)。"""
     data = await _request(
         client,
         {
             'generator': 'search',
             'gsrsearch': keyword,
-            'gsrlimit': 1,
+            'gsrlimit': 5,
             'prop': 'pageimages|extracts',
             'exintro': 1,
             'explaintext': 1,
-            'exlimit': 1,
+            'exlimit': 5,
             'pithumbsize': 400,
         },
     )
     pages = (data.get('query') or {}).get('pages') or []
-    if not pages:
-        return None
-    # formatversion=2 下 pages 是列表，按搜索排名取第一条
-    return min(pages, key=lambda page: page.get('index', 0))
+    return pick_best_page(keyword, pages)
 
 
 async def _suggest(client: AsyncClient, keyword: str) -> str | None:
@@ -123,7 +179,8 @@ async def _search_titles(client: AsyncClient, keyword: str, limit: int = 6) -> l
 async def search_wiki_page(keyword: str) -> tuple[dict | None, str]:
     """搜索词条，返回 (页面, 实际使用的关键词)。
 
-    依次尝试：直接搜索 -> 接口建议词 -> 本地近似标题，全部失败返回 (None, 原关键词)。
+    依次尝试：直接搜索 -> 拼写建议 -> 截断中文问句 -> 本地近似标题，
+    全部失败返回 (None, 原关键词)。
     """
     cached = _cache_get(keyword)
     if cached is not _CACHE_MISS:
@@ -131,23 +188,33 @@ async def search_wiki_page(keyword: str) -> tuple[dict | None, str]:
 
     used = keyword
     async with AsyncClient(timeout=WIKI_TIMEOUT) as client:
-        page = await _search_page(client, keyword)
+        page, score = await _search_best(client, keyword)
 
-        if page is None:
+        # 1) 只是全文命中（比如召回版本日志）时，先试接口给的拼写建议
+        if score < WIKI_GOOD_SCORE:
             suggestion = await _suggest(client, keyword)
             if suggestion:
-                page = await _search_page(client, suggestion)
-                if page is not None:
-                    used = suggestion
+                candidate, candidate_score = await _search_best(client, suggestion)
+                if candidate_score > score:
+                    page, score, used = candidate, candidate_score, suggestion
 
+        # 2) 仍然不贴合，就截掉「有哪些 / 怎么获得」这类疑问词再搜一次
+        if score < WIKI_GOOD_SCORE:
+            trimmed = _trim_question(keyword)
+            if trimmed and trimmed != keyword:
+                candidate, candidate_score = await _search_best(client, trimmed)
+                if candidate_score > score:
+                    page, score, used = candidate, candidate_score, trimmed
+
+        # 3) 完全没有结果，才用本地近似标题兜底
         if page is None:
             titles = await _search_titles(client, keyword)
             # 只在标题与输入足够接近时采用，避免把无关词条当成结果
             close = difflib.get_close_matches(keyword, titles, n=1, cutoff=WIKI_FUZZY_CUTOFF)
             if close:
-                page = await _search_page(client, close[0])
-                if page is not None:
-                    used = close[0]
+                candidate, _ = await _search_best(client, close[0])
+                if candidate is not None:
+                    page, used = candidate, close[0]
 
     result = (page, used)
     _cache_put(keyword, result)
