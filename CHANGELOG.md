@@ -6,6 +6,15 @@
 - 上游自身的变更请见 [上游 Releases](https://github.com/MineJPGcraft/UniBot/releases)。
 - 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [未发布]
+
+### 新增
+
+- **`Plugins/Wiki.py`：Minecraft Wiki 词条查询**（`.wiki <关键词>`），返回简介、缩略图与原文链接，数据源为 `zh.minecraft.wiki` 的 MediaWiki 接口（无需 Token）。
+  - 查询失败时依次回退：接口「您是不是要查」建议词 → 本地近似标题匹配（例如 `lava chiken` 会自动纠正为 `lava chicken`）
+  - 词条标题做 URL 编码，含 `&`、`#` 等字符也能正确拼出原文链接
+  - 结果缓存 10 分钟（上限 200 条），避免重复查询触发社区 Wiki 限流
+
 ## [v1.0.6-hu.1] - 2026-10-18
 
 ### 新增

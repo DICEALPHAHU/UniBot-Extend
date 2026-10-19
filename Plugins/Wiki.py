@@ -4,7 +4,15 @@
 
 数据来源是中文 Minecraft Wiki 的 MediaWiki 接口：先搜索词条，再取首段简介与
 缩略图，最后拼成「图片 + 标题 + 简介 + 原文链接」回复。接口不需要 Token。
+
+搜不到时会先尝试接口给出的「您是不是要查」建议词，再退化为本地近似标题匹配，
+避免一个拼写错误就查不到结果。
 """
+
+import asyncio
+import difflib
+import time
+import urllib.parse
 
 from httpx import AsyncClient
 from nonebot import on_command
@@ -27,37 +35,123 @@ WIKI_MAX_IMAGE_BYTES = 2 * 1024 * 1024
 # 带上 UA，部分站点会拒绝空 UA 的抓取
 WIKI_USER_AGENT = 'UniBot-Extend wiki plugin (https://github.com/DICEALPHAHU/UniBot-Extend)'
 
+# 查询结果缓存时长（秒）与条目上限：社区 Wiki 有限流，重复查询不应该反复打接口
+WIKI_CACHE_TTL = 600
+WIKI_CACHE_MAX = 200
+# 本地近似标题匹配的相似度阈值（0~1），太低容易匹配到无关词条
+WIKI_FUZZY_CUTOFF = 0.72
+
 # priority=0：必须小于 Scripts.Plugins.Events 的 priority=1（它以 block=True 截断事件）。
 wiki_cmd = on_command('wiki', priority=0, block=True)
 
+# 关键词 -> (写入时间, (页面, 实际使用的关键词))；页面为 None 表示确认查无此词
+_cache: dict[str, tuple[float, tuple[dict | None, str]]] = {}
+_CACHE_MISS = object()
 
-async def search_wiki_page(keyword: str) -> dict | None:
-    """按关键词搜索词条，返回首条结果的简介与缩略图信息；无结果返回 None。"""
-    params = {
-        'action': 'query',
-        'format': 'json',
-        'formatversion': 2,
-        # 搜索 + 直接带出首段简介和缩略图，一次请求搞定
-        'generator': 'search',
-        'gsrsearch': keyword,
-        'gsrlimit': 1,
-        'prop': 'pageimages|extracts',
-        'exintro': 1,
-        'explaintext': 1,
-        'exlimit': 1,
-        'pithumbsize': 400,
-    }
-    async with AsyncClient(timeout=WIKI_TIMEOUT) as client:
-        response = await client.get(WIKI_API_URL, params=params, headers={'User-Agent': WIKI_USER_AGENT})
-        if response.status_code != 200:
-            raise RuntimeError(f'Wiki 接口返回 HTTP {response.status_code}')
-        data = response.json()
 
-    pages = data.get('query', {}).get('pages') or []
+def _cache_get(keyword: str):
+    """读缓存，过期自动清理。"""
+    key = keyword.strip().lower()
+    item = _cache.get(key)
+    if item is None:
+        return _CACHE_MISS
+    created_at, value = item
+    if time.monotonic() - created_at > WIKI_CACHE_TTL:
+        _cache.pop(key, None)
+        return _CACHE_MISS
+    return value
+
+
+def _cache_put(keyword: str, value: tuple[dict | None, str]) -> None:
+    """写缓存，超过条目上限时清理最早的一半。"""
+    if len(_cache) >= WIKI_CACHE_MAX:
+        for key in sorted(_cache, key=lambda k: _cache[k][0])[: WIKI_CACHE_MAX // 2]:
+            _cache.pop(key, None)
+    _cache[keyword.strip().lower()] = (time.monotonic(), value)
+
+
+async def _request(client: AsyncClient, params: dict) -> dict:
+    """调用 MediaWiki 接口，返回 JSON。"""
+    payload = {'action': 'query', 'format': 'json', 'formatversion': 2, **params}
+    response = await client.get(WIKI_API_URL, params=payload, headers={'User-Agent': WIKI_USER_AGENT})
+    if response.status_code != 200:
+        raise RuntimeError(f'Wiki 接口返回 HTTP {response.status_code}')
+    return response.json()
+
+
+async def _search_page(client: AsyncClient, keyword: str) -> dict | None:
+    """按关键词搜索并带出首条结果的简介与缩略图；无结果返回 None。"""
+    data = await _request(
+        client,
+        {
+            'generator': 'search',
+            'gsrsearch': keyword,
+            'gsrlimit': 1,
+            'prop': 'pageimages|extracts',
+            'exintro': 1,
+            'explaintext': 1,
+            'exlimit': 1,
+            'pithumbsize': 400,
+        },
+    )
+    pages = (data.get('query') or {}).get('pages') or []
     if not pages:
         return None
     # formatversion=2 下 pages 是列表，按搜索排名取第一条
     return min(pages, key=lambda page: page.get('index', 0))
+
+
+async def _suggest(client: AsyncClient, keyword: str) -> str | None:
+    """取接口给出的「您是不是要查」建议词（拼写纠错）。"""
+    data = await _request(
+        client,
+        {'list': 'search', 'srsearch': keyword, 'srlimit': 1, 'srinfo': 'suggestion'},
+    )
+    suggestion = (data.get('query') or {}).get('searchinfo', {}).get('suggestion')
+    return suggestion.strip() if suggestion else None
+
+
+async def _search_titles(client: AsyncClient, keyword: str, limit: int = 6) -> list[str]:
+    """取搜索结果里的候选标题，供本地近似匹配兜底。"""
+    data = await _request(
+        client,
+        {'list': 'search', 'srsearch': keyword, 'srlimit': limit},
+    )
+    return [item['title'] for item in (data.get('query') or {}).get('search', []) if item.get('title')]
+
+
+async def search_wiki_page(keyword: str) -> tuple[dict | None, str]:
+    """搜索词条，返回 (页面, 实际使用的关键词)。
+
+    依次尝试：直接搜索 -> 接口建议词 -> 本地近似标题，全部失败返回 (None, 原关键词)。
+    """
+    cached = _cache_get(keyword)
+    if cached is not _CACHE_MISS:
+        return cached
+
+    used = keyword
+    async with AsyncClient(timeout=WIKI_TIMEOUT) as client:
+        page = await _search_page(client, keyword)
+
+        if page is None:
+            suggestion = await _suggest(client, keyword)
+            if suggestion:
+                page = await _search_page(client, suggestion)
+                if page is not None:
+                    used = suggestion
+
+        if page is None:
+            titles = await _search_titles(client, keyword)
+            # 只在标题与输入足够接近时采用，避免把无关词条当成结果
+            close = difflib.get_close_matches(keyword, titles, n=1, cutoff=WIKI_FUZZY_CUTOFF)
+            if close:
+                page = await _search_page(client, close[0])
+                if page is not None:
+                    used = close[0]
+
+    result = (page, used)
+    _cache_put(keyword, result)
+    return result
 
 
 async def fetch_wiki_thumbnail(source: str) -> bytes | None:
@@ -73,8 +167,8 @@ async def fetch_wiki_thumbnail(source: str) -> bytes | None:
 
 
 def build_wiki_link(title: str) -> str:
-    """把词条标题转成 Wiki 原文链接（空格换成下划线，中文保持可读）。"""
-    return WIKI_PAGE_URL + title.replace(' ', '_')
+    """把词条标题转成 Wiki 原文链接（空格换下划线，其余按 URL 规则编码）。"""
+    return WIKI_PAGE_URL + urllib.parse.quote(title.replace(' ', '_'), safe='')
 
 
 def shorten_summary(text: str) -> str:
@@ -90,7 +184,7 @@ def shorten_summary(text: str) -> str:
     return cut + '……'
 
 
-async def build_wiki_reply(page: dict, keyword: str) -> Message:
+async def build_wiki_reply(page: dict, keyword: str, used: str) -> Message:
     """把词条信息组装成「图片 + 文字」消息，发不出去的图自动降级为纯文字。"""
     title = page.get('title') or keyword
     summary = shorten_summary(page.get('extract') or '') or '（该词条暂无简介，点开原文看看吧）'
@@ -106,7 +200,8 @@ async def build_wiki_reply(page: dict, keyword: str) -> Message:
         if image:
             message += MessageSegment.image(image)
 
-    message += Message(f'【{title}】\n{summary}\nWiki 原文指北：{link}')
+    hint = f'（已按「{used}」搜索）\n' if used.strip().lower() != keyword.strip().lower() else ''
+    message += Message(f'{hint}【{title}】\n{summary}\nWiki 原文指北：{link}')
     return message
 
 
@@ -118,7 +213,7 @@ async def handle_wiki(args: Message = CommandArg()):
 
     # try 只包住网络请求；finish() 放在 try 之外，避免它的 FinishedException 被误 catch。
     try:
-        page = await search_wiki_page(keyword)
+        page, used = await search_wiki_page(keyword)
     except Exception as error:
         await wiki_cmd.finish(f'Wiki 查询失败：{str(error)[:40]}')
         return
@@ -126,14 +221,14 @@ async def handle_wiki(args: Message = CommandArg()):
     if page is None:
         await wiki_cmd.finish(f'没有找到与「{keyword}」相关的词条，换个关键词试试？')
 
-    await wiki_cmd.finish(await build_wiki_reply(page, keyword))
+    await wiki_cmd.finish(await build_wiki_reply(page, keyword, used))
 
 
 __plugin_meta__ = PluginMetadata(
     name='Minecraft Wiki 查询',
     description='搜索中文 Minecraft Wiki 词条，返回简介、缩略图与原文链接（数据来源：zh.minecraft.wiki）',
     usage='.wiki <关键词>\n示例：.wiki lava chicken',
-    extra={'author': 'vvvvdg', 'version': '1.0'},
+    extra={'author': 'vvvvdg', 'version': '1.1'},
 )
 
 register_help_commands([
