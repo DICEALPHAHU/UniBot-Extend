@@ -133,7 +133,7 @@ __plugin_meta__ = PluginMetadata(
     name='Minecraft Wiki 查询',
     description='搜索中文 Minecraft Wiki 词条，返回简介、缩略图与原文链接（数据来源：zh.minecraft.wiki）',
     usage='.wiki <关键词>\n示例：.wiki lava chicken',
-    extra={'author': 'DICEALPHAHU', 'version': '1.0'},
+    extra={'author': 'vvvvdg', 'version': '1.0'},
 )
 
 register_help_commands([
