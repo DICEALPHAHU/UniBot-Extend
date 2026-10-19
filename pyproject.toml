@@ -67,6 +67,7 @@ plugins = [
     { module_name = "Plugins.Wife", enabled = true },
     { module_name = "Plugins.Weather", enabled = true },
     { module_name = "Plugins.Wiki", enabled = true },
+    { module_name = "Plugins.Player", enabled = true },
     { module_name = "Plugins.Meal", enabled = true },
     { module_name = "Plugins.Bili", enabled = true },
     { module_name = "Plugins.Lots", enabled = true },

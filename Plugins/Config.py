@@ -54,5 +54,15 @@ class Config(BaseModel):
     # 超过这个时长的视频不做重编码（重编码是 CPU 密集操作，避免长时间占用）
     bili_max_process_minutes: float = 10.0
 
+    # ===== 玩家卡（/player）=====
+    # 卡片字体路径。留空则使用 Data/PlayerCard/NotoSansSC.ttf，没有时会自动下载。
+    player_font_path: str = ''
+
+    # 本地没有字体时是否自动下载一份（约 10MB，只下一次）。
+    player_font_auto_download: bool = True
+
+    # 字体下载地址。留空则使用内置的 Noto Sans SC 地址列表。
+    player_font_url: str = ''
+
 
 plugin_config = get_plugin_config(Config)
