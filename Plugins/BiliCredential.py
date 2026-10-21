@@ -42,8 +42,10 @@ QR_TTL_SECONDS = 180
 # 需要落盘的 Cookie 键
 CREDENTIAL_KEYS = ('SESSDATA', 'bili_jct', 'DedeUserID', 'ac_time_value')
 
-# 凭证缓存：None 表示「尚未加载」，False 表示「确认没有可用凭证」
+# 凭证缓存：None 表示「尚未加载」
 _credential: Credential | None = None
+# 匿名凭证（只带 buvid3 / buvid4，用来降低被风控的概率）
+_anonymous_credential: Credential | None = None
 _loaded = False
 _last_refresh_check = 0.0
 REFRESH_CHECK_INTERVAL = 3600
@@ -98,29 +100,44 @@ def save_cookies(cookies: dict[str, str]) -> None:
 
 def invalidate() -> None:
     """丢弃内存里的凭证缓存，下次使用时重新加载。"""
-    global _credential, _loaded
+    global _credential, _anonymous_credential, _loaded
     _credential = None
+    _anonymous_credential = None
     _loaded = False
 
 
+async def get_anonymous_credential() -> Credential | None:
+    """匿名凭证：向 B 站要一份 buvid3 / buvid4，让请求更像真实浏览器。"""
+    global _anonymous_credential
+    if _anonymous_credential is not None:
+        return _anonymous_credential
+    try:
+        credential = Credential()
+        # 注意：这个接口只返回字典，不会写回实例属性，得自己赋值
+        cookies = await credential.get_buvid_cookies() or {}
+        credential.buvid3 = cookies.get('buvid3') or ''
+        credential.buvid4 = cookies.get('buvid4') or ''
+        _anonymous_credential = credential
+        return credential
+    except Exception:
+        return None
+
+
 async def get_credential() -> Credential | None:
-    """获取当前凭证；没有可用凭证时返回 None。
+    """获取当前凭证；未登录时返回带 buvid 的匿名凭证，完全失败才返回 None。
 
     每小时最多检查一次是否需要刷新（仅当 Cookie 里带 ``ac_time_value`` 时才刷新）。
     """
     global _credential, _loaded, _last_refresh_check
 
-    if _loaded:
-        credential = _credential
-    else:
+    if not _loaded:
         cookies = load_cookies()
-        credential = Credential.from_cookies(cookies) if cookies.get('SESSDATA') else None
-        _credential, _loaded = credential, True
-        if credential is None:
-            return None
+        _credential = Credential.from_cookies(cookies) if cookies.get('SESSDATA') else None
+        _loaded = True
 
+    credential = _credential
     if credential is None:
-        return None
+        return await get_anonymous_credential()
 
     now = time.monotonic()
     if now - _last_refresh_check < REFRESH_CHECK_INTERVAL:
