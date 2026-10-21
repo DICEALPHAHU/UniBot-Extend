@@ -87,6 +87,9 @@ CLASSIC_FACES = {
     },
 }
 
+# Alex（slim）模型手臂只有 3 像素宽
+SLIM_ARM_WIDTH = 3
+
 # Alex（slim）模型手臂只有 3 像素宽，正面/背面的起始 x 与经典模型不同
 SLIM_FACES = {
     **CLASSIC_FACES,
@@ -203,9 +206,13 @@ def render_view(skin: Image.Image, model: str, back: bool = False) -> Image.Imag
     # 这类皮肤未使用的区域常被填成不透明黑色，必须跳过 overlay，否则整个模型会被涂黑。
     legacy = skin.height < 64
     layout = (BACK_LAYOUT + [BACK_HEAD]) if back else (FRONT_LAYOUT + [FRONT_HEAD])
+    # slim 手臂只有 3 像素宽，贴身体的那一侧要收进来 1 像素，否则会跟躯干之间留出空隙
+    arm_offset = (4 - SLIM_ARM_WIDTH) if model == 'slim' else 0
     canvas = Image.new('RGBA', (16, 32), (0, 0, 0, 0))
     overlays = []
     for part, face, overlay_face, x, y in layout:
+        if arm_offset and part.endswith('_arm') and x == 0:
+            x += arm_offset
         source = part
         if legacy and part.startswith('left_'):
             source = 'right_' + part.split('_', 1)[1]
