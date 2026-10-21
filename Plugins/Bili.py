@@ -216,7 +216,15 @@ def simplify_bilibili_url(full_url: str) -> str:
     return f'https://www.bilibili.com/video/{bv_id}/'
 
 
-# ---------------- UP 主最新视频（bilibili_api，不依赖第三方聚合接口） ----------------
+# ---------------- UP 主最新视频 ----------------
+# 数据源可选：
+#   bilibili_api（默认主路径，直连 B 站官方接口）
+#   uapis        （老的第三方聚合接口，作为兜底）
+#   auto         （默认：先用 bilibili_api，失败再回退 uapis）
+BILI_LIST_SOURCE = (plugin_config.bili_list_source or 'auto').strip().lower()
+UAPI_TOKEN = plugin_config.uapipro_token
+UAPIS_ARCHIVES_URL = 'https://uapis.cn/api/v1/social/bilibili/archives'
+UAPIS_USERINFO_URL = 'https://uapis.cn/api/v1/social/bilibili/userinfo'
 
 # 连续失败计数：接口抖动时只在第一次记 warning，之后降级为 debug，避免刷屏
 _list_failure_streak = 0
@@ -236,12 +244,11 @@ def _parse_duration(text: str) -> int:
         return 0
 
 
-async def get_up_latest_video(mid: int | str, max_retry: int = 2) -> dict | None:
-    """获取 UP 主最新投稿（按发布时间取最新一条），失败返回 None。
+async def _get_latest_via_bilibili_api(mid: int | str, max_retry: int = 2) -> dict | None:
+    """（主路径）bilibili_api 的用户投稿接口，按发布时间取最新一条。
 
-    - 数据来源：bilibili_api 的用户投稿接口（自动带凭证，没有凭证也能匿名请求）
-    - 只取最新一页 5 条，避免拉全量；取回后自行按 ``created`` 取最大的一条
-    - 连续失败不刷屏：第一次 warning，之后 debug
+    - 自动带凭证；没有凭证时用带 buvid 的匿名凭证
+    - 只取最新一页 5 条，避免拉全量
     """
     global _list_failure_streak
     if not str(mid).isdigit():
@@ -292,6 +299,78 @@ async def get_up_latest_video(mid: int | str, max_retry: int = 2) -> dict | None
     return None
 
 
+async def _get_latest_via_uapis(mid: int | str, max_retry: int = 2) -> dict | None:
+    """（兜底路径）uapis.cn 的 archives 接口，保留原有逻辑。
+
+    ★ ps 固定 30：uapis 按 (ps, pn) 分键缓存且各键冻结时间不同，
+      ps=1 会返回置顶/缓存的旧稿；取回后自行按 publish_time 取最大的一条。
+    """
+    if not str(mid).isdigit():
+        logger.error('UP主UID无效（非数字）')
+        return None
+
+    headers = {'User-Agent': USER_AGENT}
+    if UAPI_TOKEN:
+        headers['Authorization'] = f'Bearer {UAPI_TOKEN}'
+
+    for retry in range(max_retry + 1):
+        try:
+            async with AsyncClient(timeout=10) as client:
+                response = await client.get(
+                    UAPIS_ARCHIVES_URL,
+                    params={'mid': str(mid), 'orderby': 'pubdate', 'ps': 30, 'pn': 1},
+                    headers=headers,
+                )
+                if response.status_code != 200:
+                    logger.debug(f'uapis 请求失败（{response.status_code}），重试 {retry}/{max_retry}')
+                    if retry < max_retry:
+                        await asyncio.sleep(1)
+                    continue
+
+                result = response.json() or {}
+                videos = result.get('videos') or []
+                if not videos:
+                    return None
+                video_data = max(videos, key=lambda item: int(item.get('publish_time') or 0))
+                return {
+                    'aid': str(video_data.get('aid', '')),
+                    'bvid': video_data.get('bvid', ''),
+                    'title': (video_data.get('title') or '未知标题').strip(),
+                    'cover': video_data.get('cover', ''),
+                    'duration': int(video_data.get('duration') or 0),
+                    'play_count': int(video_data.get('play_count') or 0),
+                    'publish_time': int(video_data.get('publish_time') or 0),
+                    'create_time': int(video_data.get('create_time') or 0),
+                }
+        except Exception as error:
+            logger.debug(f'uapis 请求异常（重试 {retry}/{max_retry}）：{error}')
+        if retry < max_retry:
+            await asyncio.sleep(1)
+    return None
+
+
+async def get_up_latest_video(mid: int | str, max_retry: int = 2) -> dict | None:
+    """按配置选择数据源取 UP 主最新投稿，失败返回 None。
+
+    ``BILI_LIST_SOURCE``：
+      - ``bilibili_api``：只用官方接口
+      - ``uapis``：只用第三方聚合接口（老行为）
+      - ``auto``（默认）：先官方，失败且配了 uapis token 时自动回退
+    """
+    source = BILI_LIST_SOURCE
+    if source == 'uapis':
+        return await _get_latest_via_uapis(mid, max_retry)
+
+    result = await _get_latest_via_bilibili_api(mid, max_retry)
+    if result is not None or source == 'bilibili_api':
+        return result
+
+    if UAPI_TOKEN:
+        logger.debug('官方接口取列表失败，回退 uapis')
+        return await _get_latest_via_uapis(mid, max_retry)
+    return None
+
+
 async def get_up_nickname(uid: int | str) -> str:
     """获取 UP 主昵称，带 6 小时缓存；失败时沿用上次成功的名字。"""
     if not str(uid).isdigit():
@@ -311,7 +390,29 @@ async def get_up_nickname(uid: int | str) -> str:
             _nickname_cache[key] = (time.time(), name)
             return name
     except Exception as error:
-        logger.debug(f'获取UP主昵称失败（UID:{uid}）：{error}')
+        logger.debug(f'官方接口获取UP主昵称失败（UID:{uid}）：{error}')
+
+    # 兜底：uapis 的 userinfo 接口
+    if BILI_LIST_SOURCE != 'bilibili_api' and UAPI_TOKEN:
+        try:
+            async with AsyncClient(timeout=10, verify=False) as client:
+                response = await client.get(
+                    UAPIS_USERINFO_URL,
+                    params={'uid': str(uid)},
+                    headers={'User-Agent': USER_AGENT, 'Authorization': f'Bearer {UAPI_TOKEN}'},
+                )
+                if response.status_code == 200:
+                    result = response.json() or {}
+                    name = ''
+                    if result.get('code') == 0 and 'data' in result:
+                        name = (result['data'].get('name') or '').strip()
+                    elif result.get('mid') == int(uid):
+                        name = (result.get('name') or '').strip()
+                    if name:
+                        _nickname_cache[key] = (time.time(), name)
+                        return name
+        except Exception as error:
+            logger.debug(f'uapis 获取昵称失败（UID:{uid}）：{error}')
 
     return cached[1] if cached else '未知UP主'
 

@@ -112,7 +112,11 @@
 >
 > **匿名可用**：不登录也能取到列表；登录（`/bililogin` 扫码，或 `.env` 里填 `BILI_COOKIE`）后风控更宽松、部分高清源更全。
 >
+> **数据源开关**：`BILI_LIST_SOURCE=auto`（默认：官方接口优先，失败回退 uapis）/ `bilibili_api`（只用官方）/ `uapis`（只用第三方聚合接口，即老行为）。要回退到 old 方案只需改这一个值。
+>
 > **反风控开关**：`BILI_HTTP_BACKEND=auto`（默认，装了 `curl_cffi` 就用浏览器 TLS 指纹）/ `httpx`（强制纯 httpx）。视频下载固定走 httpx，并会避开已知会 403 的 PCDN 域名。
+>
+> ⚠️ 实测对比（2026-10-21）：对同一个 UP，官方接口返回 `BV17LJd6uEkx`（2026-10-20），uapis 返回 `BV1qqNR6PEf4`（2026-07-18）—— **落后 94 天**。uapis 的 `(ps, pn)` 分键缓存会冻结在某个时间点，这正是当初换数据源的原因。
 
 ### 2. 抽老婆 / 强娶
 
@@ -201,6 +205,7 @@ module_name = "nonebot.adapters.onebot.v11"
 | `BILI_VIDEO_KEEP_DAYS` | `3` | 视频临时文件保留天数 |
 | `BILI_FFMPEG_PATH` | 空 | ffmpeg 路径，留空自动探测 / 下载 |
 | `BILI_FFMPEG_AUTO_DOWNLOAD` | `true` | 找不到 ffmpeg 时自动下载 |
+| `BILI_LIST_SOURCE` | `auto` | 监控数据源：`auto`（官方优先，失败回退 uapis）/ `bilibili_api` / `uapis` |
 | `BILI_HTTP_BACKEND` | `auto` | B站请求后端：`auto` / `httpx` / `curl_cffi` |
 | `BILI_COOKIE` | 空 | 直接注入 B 站 Cookie（`SESSDATA=...; bili_jct=...`），留空则用扫码登录保存的凭证 |
 | `BILI_TRIM_BLACK_ENABLED` | `true` | 是否裁掉视频开头黑场 |

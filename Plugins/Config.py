@@ -54,6 +54,12 @@ class Config(BaseModel):
     # 超过这个时长的视频不做重编码（重编码是 CPU 密集操作，避免长时间占用）
     bili_max_process_minutes: float = 10.0
 
+    # ===== B站监控数据源 =====
+    # auto（默认）：先用官方接口（bilibili_api），失败且配了 uapis token 时回退 uapis
+    # bilibili_api：只用官方接口
+    # uapis：只用 uapis.cn 聚合接口（老行为，ps=30 + 按 publish_time 取最大）
+    bili_list_source: str = 'auto'
+
     # ===== B站请求后端 =====
     # auto（默认）：装了 curl_cffi 就用浏览器 TLS 指纹请求，没装自动回退 httpx
     # httpx / curl_cffi：强制指定（curl_cffi 未安装时仍会回退 httpx）

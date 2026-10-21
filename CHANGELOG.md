@@ -27,6 +27,7 @@
   - 也可用 `BILI_COOKIE` 直接注入 Cookie，凭证落盘 `Data/Bili/credential.json`
   - 新增 `BILI_HTTP_BACKEND=auto|httpx|curl_cffi` 开关：装了 `curl_cffi` 就用浏览器 TLS 指纹请求，抗风控更强
   - 下载侧加入 PCDN 域名过滤与 `hvc1` 编码归一化；接口失败改为「静默跳过本轮」，不再刷屏
+  - 新增 `BILI_LIST_SOURCE=auto|bilibili_api|uapis` 开关：默认 `auto`（官方接口优先，失败且配了 token 时回退 uapis），可一键切回老方案
   - 抽帧改用 ffmpeg（移除 `opencv-python` 依赖），并同步了线上此前未入库的修复：NapCat 共享临时目录、多适配器下正确选取 OneBot bot、图片改发 bytes
 
 ## [v1.0.6-hu.1] - 2026-10-18
