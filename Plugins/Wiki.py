@@ -36,6 +36,10 @@ WIKI_MAX_IMAGE_BYTES = 2 * 1024 * 1024
 # 带上 UA，部分站点会拒绝空 UA 的抓取
 WIKI_USER_AGENT = 'UniBot-Extend wiki plugin (https://github.com/DICEALPHAHU/UniBot-Extend)'
 
+# 接口返回 5xx 时的重试次数与退避基数（秒）
+WIKI_RETRY_TIMES = 2
+WIKI_RETRY_DELAY = 0.8
+
 # 查询结果缓存时长（秒）与条目上限：社区 Wiki 有限流，重复查询不应该反复打接口
 WIKI_CACHE_TTL = 600
 WIKI_CACHE_MAX = 200
@@ -53,6 +57,14 @@ wiki_cmd = on_command('wiki', priority=0, block=True)
 # 关键词 -> (写入时间, (页面, 实际使用的关键词))；页面为 None 表示确认查无此词
 _cache: dict[str, tuple[float, tuple[dict | None, str]]] = {}
 _CACHE_MISS = object()
+
+
+class WikiUnavailable(RuntimeError):
+    """Wiki 服务端不可用（连续 5xx），通常是站点维护或后端故障。"""
+
+    def __init__(self, status: int):
+        super().__init__(f'Wiki 接口返回 HTTP {status}')
+        self.status = status
 
 
 def _cache_get(keyword: str):
@@ -77,12 +89,19 @@ def _cache_put(keyword: str, value: tuple[dict | None, str]) -> None:
 
 
 async def _request(client: AsyncClient, params: dict) -> dict:
-    """调用 MediaWiki 接口，返回 JSON。"""
+    """调用 MediaWiki 接口，返回 JSON；5xx 会退避重试几次。"""
     payload = {'action': 'query', 'format': 'json', 'formatversion': 2, **params}
-    response = await client.get(WIKI_API_URL, params=payload, headers={'User-Agent': WIKI_USER_AGENT})
-    if response.status_code != 200:
-        raise RuntimeError(f'Wiki 接口返回 HTTP {response.status_code}')
-    return response.json()
+    status = 0
+    for attempt in range(WIKI_RETRY_TIMES + 1):
+        response = await client.get(WIKI_API_URL, params=payload, headers={'User-Agent': WIKI_USER_AGENT})
+        status = response.status_code
+        if status == 200:
+            return response.json()
+        if status < 500:
+            raise RuntimeError(f'Wiki 接口返回 HTTP {status}')
+        if attempt < WIKI_RETRY_TIMES:
+            await asyncio.sleep(WIKI_RETRY_DELAY * (attempt + 1))
+    raise WikiUnavailable(status)
 
 
 def _normalize(text: str) -> str:
@@ -281,6 +300,9 @@ async def handle_wiki(args: Message = CommandArg()):
     # try 只包住网络请求；finish() 放在 try 之外，避免它的 FinishedException 被误 catch。
     try:
         page, used = await search_wiki_page(keyword)
+    except WikiUnavailable as error:
+        await wiki_cmd.finish(f'Wiki 服务器暂时不可用（HTTP {error.status}），可能正在维护，稍后再试。')
+        return
     except Exception as error:
         await wiki_cmd.finish(f'Wiki 查询失败：{str(error)[:40]}')
         return
