@@ -27,7 +27,14 @@ from bilibili_api.video import (
 )
 from httpx import AsyncClient
 from nonebot import get_bots, get_driver, logger, on_command
-from nonebot.adapters.onebot.v11 import Bot, MessageEvent, GroupMessageEvent, Message, MessageSegment
+from nonebot.adapters.onebot.v11 import (
+    Bot,
+    GroupMessageEvent,
+    Message,
+    MessageEvent,
+    MessageSegment,
+    PrivateMessageEvent,
+)
 from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.plugin import PluginMetadata
@@ -1327,8 +1334,11 @@ async def monitor_up_new_video():
         await asyncio.sleep(BILI_UP_WAITSEC)
 
 # ====================== 扫码登录 ======================
-# 二维码只写文件 + 打印到控制台，绝不发到群里（群里谁都能扫）
+# 二维码只写文件 + 打印到控制台；群聊绝不发图（谁都能扫），私聊才直接发
 _login_task: asyncio.Task | None = None
+# 登录二维码放 Data/Bili（和 credential.json 同目录，Data 是挂载出来的，宿主机上直接可见）。
+# 注意不能用 TEMP_ROOT —— 那是给视频/图片用的 NapCat 共享目录，二维码不经过 NapCat。
+QR_PATH = Path('Data/Bili') / 'login_qr.png'
 
 
 async def _notify_group(group_id: int | None, text: str) -> None:
@@ -1363,22 +1373,34 @@ async def _wait_scan_login(key: str, group_id: int | None) -> None:
                 pass
             logger.success(f'B站登录成功，凭证已保存（账号：{nickname}）')
             await _notify_group(group_id, f'B站登录成功，凭证已保存（账号：{nickname}）')
+            QR_PATH.unlink(missing_ok=True)
             return
 
         if status == 'expired':
             break
         await asyncio.sleep(2)
 
+    QR_PATH.unlink(missing_ok=True)
     logger.info('B站登录二维码已过期，本次扫码结束（不会在群里提示）')
 
 
-bili_login = on_command('bililogin', permission=SUPERUSER, block=True, priority=0)
+bili_login = on_command(
+    'bililogin',
+    aliases={'blogin', 'bilogin'},
+    block=True,
+    priority=0,
+)
 
 
 @bili_login.handle()
-async def handle_bili_login(event: MessageEvent):
-    """生成 B 站扫码登录二维码：写文件 + 控制台 ASCII，群里只回提示。"""
+async def handle_bili_login(bot: Bot, event: MessageEvent):
+    """生成 B 站扫码登录二维码：写文件 + 控制台 ASCII，群里只回提示。
+
+    群聊里绝不发送图片（谁都能扫）；私聊时直接把二维码发给发指令的人。
+    """
     global _login_task
+    if not await SUPERUSER(bot, event):
+        await bili_login.finish('该指令需要超级用户权限（SUPERUSERS 配置）。')
     if _login_task and not _login_task.done():
         await bili_login.finish('已有一次扫码登录在进行中，请先完成或等它过期。')
 
@@ -1387,19 +1409,33 @@ async def handle_bili_login(event: MessageEvent):
     except Exception as error:
         await bili_login.finish(f'生成登录二维码失败：{error}')
 
-    qr_path = TEMP_ROOT / 'Bili' / 'login_qr.png'
+    qr_path = QR_PATH
     qr_path.parent.mkdir(parents=True, exist_ok=True)
-    qr_path.write_bytes(BiliCredential.render_qr_png(url))
+    qr_bytes = BiliCredential.render_qr_png(url)
+    qr_path.write_bytes(qr_bytes)
     # 直接 print，绕过 loguru 的前缀，否则 ASCII 图案会被时间戳打断
     BiliCredential.print_qr_ascii(url)
     logger.info(f'B站登录二维码已生成：{qr_path.absolute()}')
+
+    if isinstance(event, PrivateMessageEvent):
+        # 私聊只有发指令的人能看到，直接发图最省事
+        group_id = None
+        _login_task = asyncio.create_task(_wait_scan_login(key, None))
+        await bili_login.finish(
+            Message(
+                MessageSegment.image(qr_bytes)
+                + MessageSegment.text(f'\n请用 B 站 App 扫码，有效期 {BiliCredential.QR_TTL_SECONDS} 秒。')
+            )
+        )
 
     group_id = event.group_id if isinstance(event, GroupMessageEvent) else None
     _login_task = asyncio.create_task(_wait_scan_login(key, group_id))
     await bili_login.finish(
         f'登录二维码已生成，有效期 {BiliCredential.QR_TTL_SECONDS} 秒。\n'
-        f'请到服务器查看 {qr_path}，或直接在控制台扫码。'
+        f'服务器路径：{qr_path.absolute()}\n'
+        f'（也可以私聊机器人发 /bililogin，直接把二维码发给你）'
     )
+
 
 
 # ====================== 指令处理器======================

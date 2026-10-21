@@ -106,7 +106,7 @@
   | `.bilistatus` | 查看当前监控状态 |
   | `.biliclear` | 清理缓存与临时文件 |
   | `.bilicheckuid` | 校验配置的 UP UID 是否有效 |
-  | `.bililogin` | 生成 B 站扫码登录二维码（只写文件与控制台，不发到群里） |
+  | `.bililogin` | 生成 B 站扫码登录二维码（群里只回文字；私聊直接发图；文件落在 `Data/Bili/login_qr.png`） |
 
 > 数据来源是 **`bilibili_api` 的用户投稿接口**（`space/wbi/arc/search`），只取最新一页 5 条、按发布时间取最新，不再依赖任何第三方聚合接口。
 >
