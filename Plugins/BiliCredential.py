@@ -47,6 +47,8 @@ CREDENTIAL_KEYS = ('SESSDATA', 'bili_jct', 'DedeUserID', 'ac_time_value')
 _credential: Credential | None = None
 # 匿名凭证（只带 buvid3 / buvid4，用来降低被风控的概率）
 _anonymous_credential: Credential | None = None
+# 加载凭证时解析出的账号昵称（给状态展示用，避免每次查询都打接口）
+_credential_user = ''
 _loaded = False
 _last_refresh_check = 0.0
 REFRESH_CHECK_INTERVAL = 3600
@@ -107,8 +109,21 @@ def invalidate() -> None:
     _loaded = False
 
 
+def describe_credential() -> str:
+    """当前凭证状态（不发网络请求，供 /bilistatus 展示）。"""
+    if not _loaded:
+        return '尚未加载'
+    if _credential is None:
+        return '匿名（buvid3 / buvid4）'
+    uid = getattr(_credential, 'dedeuserid', '') or '未知'
+    if _credential_user:
+        return f'已登录（{_credential_user}，UID {uid}）'
+    return f'已登录（UID {uid}）'
+
+
 async def _announce_credential(credential: Credential) -> None:
     """首次加载凭证时在控制台说明当前登录的是哪个账号。"""
+    global _credential_user
     uid = getattr(credential, 'dedeuserid', '') or '未知'
     nickname = ''
     try:
@@ -116,6 +131,7 @@ async def _announce_credential(credential: Credential) -> None:
         nickname = ((info or {}).get('name') or '').strip()
     except Exception:
         pass
+    _credential_user = nickname
     if nickname:
         logger.info(f'B站凭证已加载（账号：{nickname}，UID：{uid}）')
     else:

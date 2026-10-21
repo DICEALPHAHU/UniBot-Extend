@@ -1577,9 +1577,14 @@ async def handle_status():
     cache = read_video_cache()
     
     # 组装状态信息
+    # 确保凭证已加载（这步不发额外请求，只是读取并解析本地 Cookie）
+    await BiliCredential.get_credential()
+
     status = Message()
     status += MessageSegment.text('B站UP监控状态\n')
     status += MessageSegment.text(f"├── 功能启用：{'是' if BILI_WATCHER_ENABLED else '❌ 否'}\n")
+    status += MessageSegment.text(f'├── B站凭证：{BiliCredential.describe_credential()}\n')
+    status += MessageSegment.text(f'├── 数据源：{BILI_LIST_SOURCE}\n')
     status += MessageSegment.text(f'├── 监控UP主UID：{BILI_UP_UID}\n')
     status += MessageSegment.text(f'├── 监控间隔：{BILI_UP_WAITSEC}秒\n')
     status += MessageSegment.text(f'├── 截取秒数：{BILI_FRAME_SEC}秒\n')
