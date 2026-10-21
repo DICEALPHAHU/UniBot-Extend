@@ -14,7 +14,8 @@ from pathlib import Path
 
 import httpx
 import qrcode
-from bilibili_api import Credential
+from bilibili_api import Credential, user as bili_user
+from nonebot import logger
 
 from .Config import plugin_config
 
@@ -106,6 +107,21 @@ def invalidate() -> None:
     _loaded = False
 
 
+async def _announce_credential(credential: Credential) -> None:
+    """首次加载凭证时在控制台说明当前登录的是哪个账号。"""
+    uid = getattr(credential, 'dedeuserid', '') or '未知'
+    nickname = ''
+    try:
+        info = await bili_user.User(int(uid), credential=credential).get_user_info()
+        nickname = ((info or {}).get('name') or '').strip()
+    except Exception:
+        pass
+    if nickname:
+        logger.info(f'B站凭证已加载（账号：{nickname}，UID：{uid}）')
+    else:
+        logger.info(f'B站凭证已加载（UID：{uid}，昵称获取失败）')
+
+
 async def get_anonymous_credential() -> Credential | None:
     """匿名凭证：向 B 站要一份 buvid3 / buvid4，让请求更像真实浏览器。"""
     global _anonymous_credential
@@ -134,6 +150,10 @@ async def get_credential() -> Credential | None:
         cookies = load_cookies()
         _credential = Credential.from_cookies(cookies) if cookies.get('SESSDATA') else None
         _loaded = True
+        if _credential is not None:
+            await _announce_credential(_credential)
+        else:
+            logger.info('B站未登录，使用匿名凭证（buvid3 / buvid4）')
 
     credential = _credential
     if credential is None:
