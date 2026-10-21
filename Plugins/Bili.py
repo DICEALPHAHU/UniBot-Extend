@@ -1,7 +1,8 @@
 """
 B站 UP 动态监控插件。
 
-基于 uapis.cn API 监控 UP 主新视频，自动生成快照并推送。
+监控 UP 主最新视频（bilibili_api 用户投稿接口），下载视频本体、生成快照并推送。
+不再依赖第三方聚合接口；B 站接口需要时自动带上扫码登录的凭证。
 """
 
 import asyncio
@@ -10,12 +11,14 @@ import os
 import re
 import shutil
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
-import cv2
-from bilibili_api import video
+import subprocess
+from bilibili_api import user, video
+from bilibili_api.exceptions import ResponseCodeException
 from bilibili_api.utils.aid_bvid_transformer import bvid2aid
 from bilibili_api.video import (
     VideoCodecs,
@@ -24,18 +27,31 @@ from bilibili_api.video import (
 )
 from httpx import AsyncClient
 from nonebot import get_bots, get_driver, logger, on_command
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
+from nonebot.adapters.onebot.v11 import Bot, MessageEvent, GroupMessageEvent, Message, MessageSegment
 from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.plugin import PluginMetadata
 
+from . import BiliCredential
 from .Config import plugin_config
 
 from Scripts.Config import config
 from .HelpEntry import register_help_commands
 
-# 核心路径配置（动态推导，无硬编码）
-TEMP_ROOT = Path('./Temp')
+# 核心路径配置
+# ★ 必须落在「UniBot 与 NapCat 两个容器里路径完全相同」的共享目录上，
+#   否则 NapCat 收到 file:// 路径后在自己容器里找不到文件（ENOENT）。
+#   宿主机 /srv/napcat/config/unibot-temp 同时挂给了两个容器。
+_SHARED_TEMP = Path('/app/napcat/config/unibot-temp')
+try:
+    (_SHARED_TEMP / 'Bili').mkdir(parents=True, exist_ok=True)
+    TEMP_ROOT = _SHARED_TEMP
+except OSError as _error:
+    logger.warning(
+        f'共享临时目录不可用（{_error}），退回 ./Temp：'
+        f'图片仍可发送（走 base64），但视频会因 NapCat 读不到文件而失败'
+    )
+    TEMP_ROOT = Path('./Temp')
 
 # 所有临时文件路径都基于动态根目录生成
 CACHE_FILE = TEMP_ROOT / 'Bili' / 'bvtemp.json'  # 缓存文件
@@ -58,8 +74,6 @@ BILI_UP_UID = plugin_config.bili_up_uid
 BILI_UP_WAITSEC = plugin_config.bili_up_waitsec
 MESSAGE_GROUPS = config.message_groups
 BILI_FRAME_SEC = plugin_config.bili_watcher_framesec
-UAPI_TOKEN = plugin_config.uapipro_token
-UAPIS_CN_URL = 'https://uapis.cn/api/v1/social/bilibili/archives'
 
 # 视频推送体积上限（MB）：超过则不发视频，退回只发快照。
 # 注意 base64 上传时字符串会膨胀约 33%，实际上限还取决于 OneBot 实现。
@@ -102,7 +116,7 @@ FFMPEG_DOWNLOAD_URLS = [
 # 插件元信息
 __plugin_meta__ = PluginMetadata(
     name='B站UP动态监控',
-    description='基于uapis.cn API监控UP主新视频，自动生成快照并推送',
+    description='监控UP主最新视频，下载视频本体、生成快照并推送（数据来源：bilibili_api）',
     usage="""
     .bv <B站视频链接> - 解析B站视频（支持b23.tv短链接）并返回截图
     .biliclear - 清理缓存和临时文件
@@ -202,120 +216,138 @@ def simplify_bilibili_url(full_url: str) -> str:
     return f'https://www.bilibili.com/video/{bv_id}/'
 
 
+# ---------------- UP 主最新视频（bilibili_api，不依赖第三方聚合接口） ----------------
+
+# 连续失败计数：接口抖动时只在第一次记 warning，之后降级为 debug，避免刷屏
+_list_failure_streak = 0
+# UP 主昵称缓存：昵称基本不变，没必要每次推送都查
+_nickname_cache: dict[int, tuple[float, str]] = {}
+NICKNAME_CACHE_TTL = 6 * 3600
+
+
+def _parse_duration(text: str) -> int:
+    """把「01:23」「1:02:03」解析成秒。"""
+    total = 0
+    try:
+        for part in str(text or '').split(':'):
+            total = total * 60 + int(part)
+        return total
+    except (TypeError, ValueError):
+        return 0
+
+
 async def get_up_latest_video(mid: int | str, max_retry: int = 2) -> dict | None:
-    """获取 UP 主最新视频，支持 TOKEN 鉴权。"""
+    """获取 UP 主最新投稿（按发布时间取最新一条），失败返回 None。
+
+    - 数据来源：bilibili_api 的用户投稿接口（自动带凭证，没有凭证也能匿名请求）
+    - 只取最新一页 5 条，避免拉全量；取回后自行按 ``created`` 取最大的一条
+    - 连续失败不刷屏：第一次 warning，之后 debug
+    """
+    global _list_failure_streak
     if not str(mid).isdigit():
         logger.error('UP主UID无效（非数字）')
         return None
 
-    headers = {'User-Agent': USER_AGENT}
-    if UAPI_TOKEN:
-        headers['Authorization'] = f'Bearer {UAPI_TOKEN}'
+    credential = await BiliCredential.get_credential()
+    last_error = '未知错误'
 
     for retry in range(max_retry + 1):
         try:
-            async with AsyncClient(timeout=10) as client:
-                response = await client.get(
-                    UAPIS_CN_URL,
-                    params={'mid': str(mid), 'orderby': 'pubdate', 'ps': 30, 'pn': 1},
-                    headers=headers,
-                )
-                if response.status_code != 200:
-                    logger.warning(f'API请求失败（状态码：{response.status_code}），重试{retry}/{max_retry}')
-                    if retry < max_retry:
-                        await asyncio.sleep(1)
-                    continue
+            api = user.User(int(mid), credential=credential)
+            data = await api.get_videos(ps=5, pn=1, order=user.VideoOrder.PUBDATE)
+            videos = ((data or {}).get('list') or {}).get('vlist') or []
+            if not videos:
+                if _list_failure_streak:
+                    logger.info('UP主投稿接口已恢复，但返回空列表')
+                _list_failure_streak = 0
+                return None
 
-                result = response.json()
-                if not result.get('videos'):
-                    logger.info('API返回无视频数据')
-                    return None
-
-                # ★ uapis 的 ps=1 会返回置顶/缓存的旧稿件（实测把 3 个月前的视频当「最新」返回），
-                #   因此固定取 5 条并自行按 publish_time 取最大的一条，避免被返回顺序影响。
-                videos = result.get('videos') or []
-                if not videos:
-                    logger.info('API返回无视频数据')
-                    return None
-                video_data = max(videos, key=lambda item: int(item.get('publish_time') or 0))
-                return {
-                    'aid': str(video_data.get('aid', '')),
-                    'bvid': video_data.get('bvid', ''),
-                    'title': video_data.get('title', '未知标题').strip(),
-                    'cover': video_data.get('cover', ''),
-                    'duration': int(video_data.get('duration', 0)),
-                    'play_count': int(video_data.get('play_count', 0)),
-                    'publish_time': int(video_data.get('publish_time', 0)),
-                    'create_time': int(video_data.get('create_time', 0)),
-                }
-        except TimeoutError:
-            logger.warning(f'API请求超时，重试{retry}/{max_retry}')
+            latest = max(videos, key=lambda item: int(item.get('created') or 0))
+            if _list_failure_streak:
+                logger.info(f'UP主投稿接口已恢复（之前连续失败 {_list_failure_streak} 次）')
+            _list_failure_streak = 0
+            return {
+                'aid': str(latest.get('aid', '')),
+                'bvid': latest.get('bvid', ''),
+                'title': (latest.get('title') or '未知标题').strip(),
+                'cover': latest.get('pic', ''),
+                'duration': _parse_duration(latest.get('length')),
+                'play_count': int(latest.get('play') or 0),
+                'publish_time': int(latest.get('created') or 0),
+                'create_time': int(latest.get('created') or 0),
+            }
+        except ResponseCodeException as error:
+            last_error = f'接口返回 code={getattr(error, "code", "?")}（可能是风控）'
         except Exception as error:
-            logger.error(f'调用API失败（重试{retry}/{max_retry}）：{error}')
+            last_error = f'{type(error).__name__}: {error}'
 
         if retry < max_retry:
-            await asyncio.sleep(1)
+            await asyncio.sleep(1.5 * (retry + 1))
 
+    _list_failure_streak += 1
+    if _list_failure_streak == 1:
+        logger.warning(f'获取UP主最新视频失败：{last_error}（后续同类失败不再重复提示）')
+    else:
+        logger.debug(f'获取UP主最新视频失败（连续 {_list_failure_streak} 次）：{last_error}')
     return None
 
 
 async def get_up_nickname(uid: int | str) -> str:
-    """基于 uapis.cn API 获取 UP 主昵称，失败返回「未知UP主」。"""
+    """获取 UP 主昵称，带 6 小时缓存；失败时沿用上次成功的名字。"""
     if not str(uid).isdigit():
         logger.warning(f'获取UP主昵称失败：UID非法（值：{uid}）')
         return '未知UP主'
 
-    api_url = 'https://uapis.cn/api/v1/social/bilibili/userinfo'
-    request_params = {'uid': str(uid)}
-    request_headers = {
-        'User-Agent': USER_AGENT,
-        'Accept': 'application/json, text/plain, */*',
-    }
-    if UAPI_TOKEN:
-        request_headers['Authorization'] = f'Bearer {UAPI_TOKEN}'
+    key = int(uid)
+    cached = _nickname_cache.get(key)
+    if cached and time.time() - cached[0] < NICKNAME_CACHE_TTL:
+        return cached[1]
 
     try:
-        async with AsyncClient(timeout=10, verify=False) as client:
-            response = await client.get(api_url, params=request_params, headers=request_headers)
-            # 按官方文档处理各状态码
-            if response.status_code == 400:
-                logger.error(f'获取UP主昵称失败 - UID:{uid} 错误：缺少UID参数（请求异常）')
-                return '未知UP主'
-            if response.status_code == 404:
-                logger.error(f'获取UP主昵称失败 - UID:{uid} 错误：B站用户不存在')
-                return '未知UP主'
-            if response.status_code == 502:
-                logger.error(f'获取UP主昵称失败 - UID:{uid} 错误：B站API风控/上游错误（稍后重试）')
-                return '未知UP主'
-            if response.status_code != 200:
-                logger.warning(f'获取UP主昵称失败 - UID:{uid} 状态码:{response.status_code}')
-                return '未知UP主'
+        credential = await BiliCredential.get_credential()
+        info = await user.User(key, credential=credential).get_user_info()
+        name = ((info or {}).get('name') or '').strip()
+        if name:
+            _nickname_cache[key] = (time.time(), name)
+            return name
+    except Exception as error:
+        logger.debug(f'获取UP主昵称失败（UID:{uid}）：{error}')
 
-            result = response.json()
-
-            # 兼容两种返回格式
-            up_name = '未知UP主'
-            if result.get('code') == 0 and 'data' in result:
-                up_name = result['data'].get('name', '').strip() or up_name
-            elif result.get('mid') == int(uid) and result.get('name'):
-                up_name = result.get('name', '').strip() or up_name
-            else:
-                err_msg = result.get('message', '返回数据结构异常')
-                logger.warning(f'获取UP主昵称失败 - UID:{uid} 错误：{err_msg}')
-                return '未知UP主'
-
-            logger.debug(f'成功获取UP主昵称 - UID:{uid} 昵称:{up_name}')
-            return up_name
-
-    except TimeoutError:
-        logger.error(f'获取UP主昵称失败 - UID:{uid} 请求超时')
-        return '未知UP主'
-    except Exception as e:
-        logger.error(f'获取UP主昵称失败 - UID:{uid} 未知异常：{str(e)}', exc_info=True)
-        return '未知UP主'
+    return cached[1] if cached else '未知UP主'
 
 
 # 6. 视频快照生成
+# 机房 IP 命中这些 PCDN 域名时经常 403/超时，优先换用备用地址
+BLOCKED_PCDN_DOMAINS = (
+    'mcdn.bilivideo.com',
+    'mcdn.bilivideo.cn',
+    'szbdyd.com',
+    'mountaintoys.cn',
+    'nexusedgeio.com',
+    'ahdohpiechei.com',
+)
+
+
+def _is_pcdn_url(url: str) -> bool:
+    """判断是否为被屏蔽的 PCDN 地址。"""
+    if not url:
+        return False
+    try:
+        host = (urlparse(url).hostname or '').lower()
+    except Exception:
+        return False
+    return any(host == domain or host.endswith('.' + domain) for domain in BLOCKED_PCDN_DOMAINS)
+
+
+def _pick_stream_url(stream) -> str:
+    """取视频流地址；命中 PCDN 黑名单时改用 backup_url 里的干净地址。"""
+    urls = [stream.url] + list(getattr(stream, 'backup_url', None) or [])
+    for url in urls:
+        if url and not _is_pcdn_url(url):
+            return url
+    return stream.url or ''
+
+
 async def download_bilibili_video(bv_id: str) -> Path | None:
     """
     下载 B 站视频为本地 mp4 文件，返回文件路径（失败返回 None）。
@@ -334,10 +366,17 @@ async def download_bilibili_video(bv_id: str) -> Path | None:
         return None
 
     try:
-        v = video.Video(bvid=bv_id)
+        credential = await BiliCredential.get_credential()
+        v = video.Video(bvid=bv_id, credential=credential)
         video_info = await v.get_info()
         cid = video_info['pages'][0]['cid']
         download_data = await v.get_download_url(cid=cid, html5=True)
+
+        # bilibili_api 不认 hvc1 前缀，先归一化成带 "hev" 标记的写法
+        for video_data in (download_data.get('dash') or {}).get('video') or []:
+            codecs = video_data.get('codecs', '')
+            if isinstance(codecs, str) and codecs.startswith('hvc1'):
+                video_data['codecs'] = f'hev,{codecs}'
 
         # 选择最佳视频流
         detecter = VideoDownloadURLDataDetecter(download_data)
@@ -351,7 +390,10 @@ async def download_bilibili_video(bv_id: str) -> Path | None:
             logger.error('未找到合适的视频流')
             return None
 
-        stream_url = best_streams[0].url
+        stream_url = _pick_stream_url(best_streams[0])
+        if not stream_url:
+            logger.error('视频流地址为空')
+            return None
         if not stream_url.startswith(('http://', 'https://')):
             stream_url = f'https:{stream_url}'
 
@@ -741,40 +783,38 @@ async def process_video_or_original(video_path: Path) -> Path:
     return trimmed
 
 
-def generate_video_frame(video_path: Path, frame_path: Path) -> Path | None:
-    """从本地视频按 BILI_FRAME_SEC 截取一帧保存为 PNG，返回路径（失败返回 None）。"""
-    cap = cv2.VideoCapture(str(video_path), cv2.CAP_FFMPEG)
-    if not cap.isOpened():
-        logger.error(f'无法打开视频文件：{video_path}')
+async def generate_video_frame(video_path: Path, frame_path: Path) -> Path | None:
+    """
+    从本地视频按 BILI_FRAME_SEC 截取一帧保存为 PNG，返回路径（失败返回 None）。
+
+    用 ffmpeg（不再依赖 opencv）；走 run_ffmpeg 异步子进程，
+    避免同步 subprocess 阻塞事件循环导致机器人整体假死。
+    """
+    global _ffmpeg_path
+    ffmpeg = get_ffmpeg_path() or _resolve_ffmpeg_path()
+    if ffmpeg is None:
+        logger.error('未找到 ffmpeg，无法生成视频快照（请确认容器里装了 ffmpeg）')
         return None
+    _ffmpeg_path = ffmpeg
 
-    try:
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        target_sec = BILI_FRAME_SEC
-        frame_positions = [
-            min(int(fps * target_sec), total_frames - 1),  # 优先：配置秒数
-            min(int(fps * target_sec) - 5, total_frames - 1),  # 备选
-            0,
-        ]
-
-        frame = None
-        for pos in frame_positions:
-            if pos < 0:
-                continue
-            cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
-            ret, frame = cap.read()
-            if ret and frame is not None and frame.size > 0:
-                break
-        if frame is None or frame.size == 0:
-            logger.error('未能提取到有效视频帧')
-            return None
-
-        cv2.imwrite(str(frame_path), frame, [cv2.IMWRITE_PNG_COMPRESSION, 6])
-        logger.info(f'视频快照生成成功：{frame_path}')
-        return frame_path
-    finally:
-        cap.release()
+    frame_path.unlink(missing_ok=True)
+    # 依次尝试：配置秒数 -> 稍早 0.5 秒 -> 视频开头
+    for position in (BILI_FRAME_SEC, max(BILI_FRAME_SEC - 0.5, 0.0), 0.0):
+        code, output = await run_ffmpeg(
+            [
+                ffmpeg, '-hide_banner', '-loglevel', 'error',
+                '-ss', f'{position:.3f}',
+                '-i', str(video_path),
+                '-frames:v', '1', '-y', str(frame_path),
+            ],
+            timeout=30.0,
+        )
+        if code == 0 and frame_path.exists() and frame_path.stat().st_size > 0:
+            logger.info(f'视频快照生成成功：{frame_path}')
+            return frame_path
+        logger.debug(f'ffmpeg 抽帧未成功（-ss {position:.3f}，返回码 {code}）：{output[-200:]}')
+    logger.error('未能提取到有效视频帧')
+    return None
 
 
 async def get_video_frame_by_VSDU_async(video_url: str) -> Path | None:
@@ -792,7 +832,7 @@ async def get_video_frame_by_VSDU_async(video_url: str) -> Path | None:
     if video_path is None:
         return None
     try:
-        return generate_video_frame(video_path, frame_path)
+        return await generate_video_frame(video_path, frame_path)
     except Exception as e:
         logger.error(f'生成视频快照失败：{e}')
         return None
@@ -802,16 +842,30 @@ async def get_video_frame_by_VSDU_async(video_url: str) -> Path | None:
             video_path.unlink(missing_ok=True)
             logger.debug(f'临时视频文件已清理：{video_path.name}')
 
+def _get_onebot_bot():
+    """
+    取出 OneBot V11 的 bot 实例。
+
+    ⚠️ UniBot 同时挂着 Minecraft 适配器，get_bots() 会把两个 bot 都返回。
+    直接 list(...)[0] 有几率拿到 Minecraft bot —— 它没有 send_group_msg，
+    会抛 ApiNotAvailable()（异常消息为空，极难排查），
+    导致「视频推送失败退回快照」并且连文字也发不出去。
+    """
+    for bot in get_bots().values():
+        if isinstance(bot, Bot):
+            return bot
+    return None
+
+
 async def _push_to_groups(message: Message, title: str, bvid: str, max_retry: int, retry_interval: int) -> bool:
     """把消息推送到全部群，带重试（至少一个群成功即视为成功）。"""
     retry_count = 0
     push_success = False
     while retry_count < max_retry and not push_success:
         try:
-            bots = get_bots()
-            if not bots:
-                raise RuntimeError('暂无可用的Bot连接，请检查Bot是否已上线')
-            bot = list(bots.values())[0]  # 取第一个可用的Bot
+            bot = _get_onebot_bot()
+            if bot is None:
+                raise RuntimeError('暂无可用的 OneBot Bot 连接，请检查 Bot 是否已上线')
             results = await asyncio.gather(
                 *[asyncio.create_task(_send_to_group(bot, group_info, message, title, bvid))
                   for group_info in MESSAGE_GROUPS],
@@ -882,9 +936,8 @@ async def push_new_video(video_data: dict, max_retry: int = 3, retry_interval: i
         video_title = await get_video_title(bvid) if bvid else bvid
         video_sent = False
         if video_path is not None:
-            bots = get_bots()
-            if bots:
-                bot = list(bots.values())[0]
+            bot = _get_onebot_bot()
+            if bot is not None:
                 try:
                     for group_info in MESSAGE_GROUPS:
                         await _send_video_to_group(bot, group_info, video_path, video_title, bvid)
@@ -913,7 +966,7 @@ async def push_new_video(video_data: dict, max_retry: int = 3, retry_interval: i
             reason = '视频发送失败'
         frame_path = await get_video_frame_by_VSDU_async(video_url)
         if frame_path and frame_path.exists():
-            msg += MessageSegment.image(f'file:///{frame_path.absolute()}')
+            msg += MessageSegment.image(frame_path.read_bytes())
             msg += MessageSegment.text('\n')
         msg += MessageSegment.text(f'（{reason}，本次仅发送快照）\n')
         msg += MessageSegment.text(f'链接：{video_url}')
@@ -928,7 +981,7 @@ async def push_new_video(video_data: dict, max_retry: int = 3, retry_interval: i
 async def _send_to_group(bot, group_info: str, msg: Message, title: str, bvid: str):
     """内部函数：单独推送单个群，方便异步处理
 
-    MESSAGE_GROUPS 里的元素形如 "qq_client:123456789"（带平台前缀），
+    MESSAGE_GROUPS 里的元素形如 "qq_client:<群号>"（带平台前缀），
     而 OneBot 的 send_group_msg 只接受纯数字 group_id，必须先把前缀切掉，
     否则会因参数非法抛 ApiNotAvailable()。
 
@@ -966,7 +1019,7 @@ async def get_video_title(bv_id: str) -> str:
     if not is_valid_bvid(bv_id):
         return bv_id
     try:
-        info = await video.Video(bvid=bv_id).get_info()
+        info = await video.Video(bvid=bv_id, credential=await BiliCredential.get_credential()).get_info()
         return info.get('title') or bv_id
     except Exception as error:
         logger.warning(f'获取视频标题失败，文件名将使用 BV 号：{error}')
@@ -1007,7 +1060,7 @@ async def _send_video_to_group(bot, group_info: str, video_path: Path, title: st
         # 直接传裸 MessageSegment 会被适配器拒绝
         await bot.send_group_msg(
             group_id=group_id,
-            message=Message(MessageSegment.video(f'file:///{named_path.absolute()}')),
+            message=Message(MessageSegment.video(named_path.absolute().as_uri())),
         )
         logger.info(f'视频已推送至群 {group_info}：{named_path.name}')
     finally:
@@ -1026,7 +1079,7 @@ async def _send_video_to_current_group(bot, group_id: int, video_path: Path, tit
     try:
         await bot.send_group_msg(
             group_id=str(group_id),
-            message=Message(MessageSegment.video(f'file:///{named_path.absolute()}')),
+            message=Message(MessageSegment.video(named_path.absolute().as_uri())),
         )
         logger.info(f'视频已推送至群 {group_id}：{named_path.name}')
     finally:
@@ -1172,6 +1225,82 @@ async def monitor_up_new_video():
         # 正常休眠
         await asyncio.sleep(BILI_UP_WAITSEC)
 
+# ====================== 扫码登录 ======================
+# 二维码只写文件 + 打印到控制台，绝不发到群里（群里谁都能扫）
+_login_task: asyncio.Task | None = None
+
+
+async def _notify_group(group_id: int | None, text: str) -> None:
+    """往指定群发一条纯文本通知（失败只记日志）。"""
+    if not group_id:
+        return
+    bot = _get_onebot_bot()
+    if bot is None:
+        return
+    try:
+        await bot.send_group_msg(group_id=group_id, message=Message(text))
+    except Exception as error:
+        logger.warning(f'登录通知发送失败：{error}')
+
+
+async def _wait_scan_login(key: str, group_id: int | None) -> None:
+    """后台轮询扫码状态。过期时静默结束，只在控制台记一行。"""
+    deadline = time.monotonic() + BiliCredential.QR_TTL_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            status, credential = await BiliCredential.poll_login_qr(key)
+        except Exception as error:
+            logger.debug(f'扫码轮询异常：{error}')
+            status, credential = 'waiting', None
+
+        if status == 'success' and credential is not None:
+            nickname = '未知账号'
+            try:
+                info = await user.User(int(credential.dedeuserid), credential=credential).get_user_info()
+                nickname = (info or {}).get('name') or nickname
+            except Exception:
+                pass
+            logger.success(f'B站登录成功，凭证已保存（账号：{nickname}）')
+            await _notify_group(group_id, f'B站登录成功，凭证已保存（账号：{nickname}）')
+            return
+
+        if status == 'expired':
+            break
+        await asyncio.sleep(2)
+
+    logger.info('B站登录二维码已过期，本次扫码结束（不会在群里提示）')
+
+
+bili_login = on_command('bililogin', permission=SUPERUSER, block=True, priority=0)
+
+
+@bili_login.handle()
+async def handle_bili_login(event: MessageEvent):
+    """生成 B 站扫码登录二维码：写文件 + 控制台 ASCII，群里只回提示。"""
+    global _login_task
+    if _login_task and not _login_task.done():
+        await bili_login.finish('已有一次扫码登录在进行中，请先完成或等它过期。')
+
+    try:
+        url, key = await BiliCredential.generate_login_qr()
+    except Exception as error:
+        await bili_login.finish(f'生成登录二维码失败：{error}')
+
+    qr_path = TEMP_ROOT / 'Bili' / 'login_qr.png'
+    qr_path.parent.mkdir(parents=True, exist_ok=True)
+    qr_path.write_bytes(BiliCredential.render_qr_png(url))
+    # 直接 print，绕过 loguru 的前缀，否则 ASCII 图案会被时间戳打断
+    BiliCredential.print_qr_ascii(url)
+    logger.info(f'B站登录二维码已生成：{qr_path.absolute()}')
+
+    group_id = event.group_id if isinstance(event, GroupMessageEvent) else None
+    _login_task = asyncio.create_task(_wait_scan_login(key, group_id))
+    await bili_login.finish(
+        f'登录二维码已生成，有效期 {BiliCredential.QR_TTL_SECONDS} 秒。\n'
+        f'请到服务器查看 {qr_path}，或直接在控制台扫码。'
+    )
+
+
 # ====================== 指令处理器======================
 # 1. 手动触发监控
 # 注意 priority=0：Scripts.Plugins.Events 在 priority 1 以 block=True 截断事件，
@@ -1207,9 +1336,9 @@ async def handle_manual_watch():
     )
 
 # 2. BV解析指令
-test_vsdu = on_command('bv', permission=SUPERUSER, block=True, priority=0)
+test_vsdu = on_command('bv', block=True, priority=0)
 @test_vsdu.handle()
-async def handle_test_vsdu(event: GroupMessageEvent, args: Message = CommandArg()):
+async def handle_test_vsdu(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     if not BILI_WATCHER_ENABLED:
         await test_vsdu.finish('插件已禁用！')
 
@@ -1241,7 +1370,7 @@ async def handle_test_vsdu(event: GroupMessageEvent, args: Message = CommandArg(
     fail_reason = ''
     if video_path is not None:
         try:
-            await _send_video_to_current_group(test_vsdu, event.group_id, video_path, title, bv_id)
+            await _send_video_to_current_group(bot, event.group_id, video_path, title, bv_id)
             video_sent = True
         except Exception as error:
             logger.error(f'视频发送失败，退回快照：{error}')
@@ -1262,7 +1391,7 @@ async def handle_test_vsdu(event: GroupMessageEvent, args: Message = CommandArg(
     msg = Message()
     msg += MessageSegment.text('视频解析结果\n')
     if frame_path and frame_path.exists():
-        msg += MessageSegment.image(f'file:///{frame_path.absolute()}')
+        msg += MessageSegment.image(frame_path.read_bytes())
         msg += MessageSegment.text('\n')
     msg += MessageSegment.text(f'（{fail_reason}，本次仅发送快照）\n')
     msg += MessageSegment.text(f'标准链接：{final_url}')
@@ -1294,7 +1423,7 @@ async def handle_clean_cache():
 
             msg = Message(f'✅ 缓存已清空，已重新获取最新动态\nUP主：{up_name}\n标题：{title}\n')
             if frame and frame.exists():
-                msg += MessageSegment.image(f'file:///{frame.absolute()}')
+                msg += MessageSegment.image(frame.read_bytes())
             msg += f'\n链接：{url}'
     except Exception as e:
         logger.error(f'biliclear error: {e}')
@@ -1379,5 +1508,10 @@ register_help_commands([
         'name': 'bilicheckuid',
         'description': '（管理员）校验配置的 UP 主 UID',
         'usage': '/bilicheckuid',
+    },
+    {
+        'name': 'bililogin',
+        'description': '（管理员）生成 B 站扫码登录二维码（只写文件与控制台）',
+        'usage': '/bililogin',
     },
 ])

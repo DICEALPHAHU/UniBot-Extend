@@ -54,6 +54,17 @@ class Config(BaseModel):
     # 超过这个时长的视频不做重编码（重编码是 CPU 密集操作，避免长时间占用）
     bili_max_process_minutes: float = 10.0
 
+    # ===== B站请求后端 =====
+    # auto（默认）：装了 curl_cffi 就用浏览器 TLS 指纹请求，没装自动回退 httpx
+    # httpx / curl_cffi：强制指定（curl_cffi 未安装时仍会回退 httpx）
+    # 只影响 B 站 API 请求（投稿列表、用户信息），视频下载仍走 httpx
+    bili_http_backend: str = 'auto'
+
+    # 直接注入 B 站 Cookie（无头部署用），形如：
+    # SESSDATA=xxx; bili_jct=yyy; DedeUserID=zzz
+    # 留空则使用 Data/Bili/credential.json（扫码登录后自动写入）
+    bili_cookie: str = ''
+
     # ===== 玩家卡（/player）=====
     # 卡片字体路径。留空则使用 Data/PlayerCard/NotoSansSC.ttf，没有时会自动下载。
     player_font_path: str = ''

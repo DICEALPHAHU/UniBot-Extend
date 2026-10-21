@@ -75,7 +75,7 @@
 
 | 插件 | 文件 | 触发方式 | 依赖 |
 |---|---|---|---|
-| [B站 UP 动态监控](#1-b站-up-动态监控与视频推送) | `Plugins/Bili.py` | `.bv` `.biliwatch` `.bilistatus` `.biliclear` `.bilicheckuid` | `bilibili-api-python`、`opencv-python`、`nonebot-adapter-onebot`、ffmpeg（可自动下载） |
+| [B站 UP 动态监控](#1-b站-up-动态监控与视频推送) | `Plugins/Bili.py` | `.bv` `.biliwatch` `.bilistatus` `.biliclear` `.bilicheckuid` `.bililogin` | `bilibili-api-python`、`curl_cffi`（可选）、`nonebot-adapter-onebot`、ffmpeg（可自动下载） |
 | [抽老婆 / 强娶](#2-抽老婆--强娶) | `Plugins/Wife.py` | `抽老婆`、`强娶 @群友` | 无 |
 | [戳一戳 MC 冷知识](#3-戳一戳-mc-冷知识) | `Plugins/Poke.py` | 群内戳一戳机器人 | 无 |
 | [天气查询](#4-天气查询) | `Plugins/Weather.py` | `.weather <城市>` | uapis.cn Token |
@@ -106,10 +106,13 @@
   | `.bilistatus` | 查看当前监控状态 |
   | `.biliclear` | 清理缓存与临时文件 |
   | `.bilicheckuid` | 校验配置的 UP UID 是否有效 |
+  | `.bililogin` | 生成 B 站扫码登录二维码（只写文件与控制台，不发到群里） |
 
-> 监控的数据来源是 **uapis.cn 的公开接口**，只需要在 `.env` 里填 `UAPIPRO_TOKEN`；插件本身**不保存任何 B站账号 Cookie**。
+> 数据来源是 **`bilibili_api` 的用户投稿接口**（`space/wbi/arc/search`），只取最新一页 5 条、按发布时间取最新，不再依赖任何第三方聚合接口。
 >
-> ⚠️ 已知坑：uapis.cn 的 `archives` 接口会**按 `(ps, pn)` 分键缓存，且各键冻结时间不同**（实测 `ps=1` 返回 3 个月前的旧稿、`ps=5` 后来冻在 7 月，`ps=30` 才是新鲜的）。因此插件固定请求 30 条、自行按 `publish_time` 取最大的一条，并保证缓存时间戳只增不减 —— 否则会出现「最新视频 ↔ 旧视频」每轮互相顶掉、反复推送的刷屏问题。
+> **匿名可用**：不登录也能取到列表；登录（`/bililogin` 扫码，或 `.env` 里填 `BILI_COOKIE`）后风控更宽松、部分高清源更全。
+>
+> **反风控开关**：`BILI_HTTP_BACKEND=auto`（默认，装了 `curl_cffi` 就用浏览器 TLS 指纹）/ `httpx`（强制纯 httpx）。视频下载固定走 httpx，并会避开已知会 403 的 PCDN 域名。
 
 ### 2. 抽老婆 / 强娶
 
@@ -175,8 +178,8 @@
 ```toml
 dependencies = [
     # ...
-    "bilibili-api-python>=17.4.2",   # B站视频下载 / 解析
-    "opencv-python>=5.0.0.93",       # 视频抽帧与黑场检测
+    "bilibili-api-python>=17.4.2",   # B站视频下载 / 解析 / UP 投稿列表
+    "curl_cffi>=0.13.0,<0.15.0",     # B站请求的浏览器 TLS 指纹（可选，可用 BILI_HTTP_BACKEND=httpx 关闭）
     "nonebot-adapter-onebot",        # 上述插件基于 OneBot V11 事件（群消息 / 戳一戳 / 主动推送）
 ]
 
@@ -189,7 +192,7 @@ module_name = "nonebot.adapters.onebot.v11"
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `UAPIPRO_TOKEN` | 空 | uapis.cn 的 API Token，天气 / 摸摸 / B站动态共用 |
+| `UAPIPRO_TOKEN` | 空 | uapis.cn 的 API Token（天气 / 摸摸使用；B站监控已不再依赖） |
 | `BILI_WATCHER_ENABLED` | `false` | 是否启用 UP 主新视频监控 |
 | `BILI_UP_UID` | `0` | 要监控的 UP 主 UID |
 | `BILI_UP_WAITSEC` | `30` | 轮询间隔（秒），建议 ≥300 |
@@ -198,6 +201,8 @@ module_name = "nonebot.adapters.onebot.v11"
 | `BILI_VIDEO_KEEP_DAYS` | `3` | 视频临时文件保留天数 |
 | `BILI_FFMPEG_PATH` | 空 | ffmpeg 路径，留空自动探测 / 下载 |
 | `BILI_FFMPEG_AUTO_DOWNLOAD` | `true` | 找不到 ffmpeg 时自动下载 |
+| `BILI_HTTP_BACKEND` | `auto` | B站请求后端：`auto` / `httpx` / `curl_cffi` |
+| `BILI_COOKIE` | 空 | 直接注入 B 站 Cookie（`SESSDATA=...; bili_jct=...`），留空则用扫码登录保存的凭证 |
 | `BILI_TRIM_BLACK_ENABLED` | `true` | 是否裁掉视频开头黑场 |
 | `BILI_BLACK_PIXEL_THRESHOLD` | `0.10` | 黑场亮度阈值 |
 | `BILI_BLACK_MIN_DURATION` | `0.3` | 黑场最短持续秒数 |
@@ -216,7 +221,7 @@ module_name = "nonebot.adapters.onebot.v11"
 
 Everything new lives in `Plugins/` and is registered in `pyproject.toml` under `[tool.nonebot] plugins`, so each one can be toggled individually (author: **DICEALPHAHU**). Each plugin declares `__plugin_meta__`, so the WebUI plugin page shows a proper name, description, version and author, and `Plugins/HelpEntry.py` registers these commands into the `/help` listing.
 
-- **Bilibili uploader watcher** (`Bili.py`) – polls a configured uploader for new videos (default every 30s) and pushes a snapshot image or the video itself into the configured message groups. It auto-trims the black fade-in at the start of a video with ffmpeg (auto-downloaded on demand), de-duplicates pushes across restarts, retries failures, and cleans up temporary files. Admin commands: `.bv <url>`, `.biliwatch`, `.bilistatus`, `.biliclear`, `.bilicheckuid`. It uses the public **uapis.cn** API with your own `UAPIPRO_TOKEN` and stores **no Bilibili account cookies**. Newness is decided by publish timestamp only (never by BV number alone), the cache timestamp can never regress, and videos older than 3 days are never pushed on a cold start — this prevents the "newest ↔ stale pinned video" push loop caused by the upstream API's broken `ps=1` response.
+- **Bilibili uploader watcher** (`Bili.py`) – polls a configured uploader for new videos (default every 30s) and pushes a snapshot image or the video itself into the configured message groups. It auto-trims the black fade-in at the start of a video with ffmpeg (auto-downloaded on demand), de-duplicates pushes across restarts, retries failures, and cleans up temporary files. Admin commands: `.bv <url>`, `.biliwatch`, `.bilistatus`, `.biliclear`, `.bilicheckuid`, `.bililogin`. The video list comes straight from Bilibili (`bilibili_api`, no third-party aggregator) and works anonymously; an optional QR login (`/bililogin`, never posted to the group) or a `BILI_COOKIE` value enables a full credential. `BILI_HTTP_BACKEND=auto` uses a browser TLS fingerprint via `curl_cffi` when it is installed. Newness is decided by publish timestamp only (never by BV number alone), the cache timestamp can never regress, and videos older than 3 days are never pushed on a cold start. See [B站 UP 动态监控](#1-b站-up-动态监控与视频推送) for details.
 - **"Draw a wife" / forced marriage** (`Wife.py`) – `抽老婆` picks a random group member once per day; `强娶 @someone` remarries to a specific member (once per day per person).
 - **Poke trivia** (`Poke.py` + `WikiDatabase.json`) – poking the bot in a group returns a random Minecraft fun fact, with a 120s cooldown and 10 randomized cooldown replies. The trivia database is an editable JSON file.
 - **Weather** (`Weather.py`) – `.weather <city>` returns current conditions plus a 1-day forecast via uapis.cn.

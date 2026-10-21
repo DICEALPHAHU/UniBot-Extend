@@ -22,6 +22,13 @@
   - 首次使用自动下载中文字体到 `Data/PlayerCard/`（约 10MB，可用 `PLAYER_FONT_PATH` / `PLAYER_FONT_AUTO_DOWNLOAD` 覆盖）
   - 结果缓存 10 分钟；离线服玩家不在 Mojang 记录里，会给出明确提示
 
+- **B站监控改为直连官方接口**（去 uapis 化）：UP 主最新视频列表改用 `bilibili_api` 的用户投稿接口，昵称改用用户信息接口并加 6 小时缓存。
+  - 匿名即可工作；支持 `/bililogin` 扫码登录获取凭证（**二维码只写 `Temp/Bili/login_qr.png` 与控制台，绝不发群**，有效期 180 秒，过期静默结束）
+  - 也可用 `BILI_COOKIE` 直接注入 Cookie，凭证落盘 `Data/Bili/credential.json`
+  - 新增 `BILI_HTTP_BACKEND=auto|httpx|curl_cffi` 开关：装了 `curl_cffi` 就用浏览器 TLS 指纹请求，抗风控更强
+  - 下载侧加入 PCDN 域名过滤与 `hvc1` 编码归一化；接口失败改为「静默跳过本轮」，不再刷屏
+  - 抽帧改用 ffmpeg（移除 `opencv-python` 依赖），并同步了线上此前未入库的修复：NapCat 共享临时目录、多适配器下正确选取 OneBot bot、图片改发 bytes
+
 ## [v1.0.6-hu.1] - 2026-10-18
 
 ### 新增
