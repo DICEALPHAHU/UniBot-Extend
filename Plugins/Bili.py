@@ -90,6 +90,9 @@ BILI_VIDEO_MAX_BYTES = BILI_VIDEO_MAX_MB * 1024 * 1024
 BILI_VIDEO_KEEP_DAYS = plugin_config.bili_video_keep_days
 # 视频发送方式：video（视频消息）/ file（群文件）
 BILI_VIDEO_SEND_MODE = (plugin_config.bili_video_send_mode or 'video').strip().lower()
+# 发送前是否重编码成 QQ 友好格式
+BILI_VIDEO_NORMALIZE = plugin_config.bili_video_normalize
+BILI_VIDEO_NORMALIZE_MAX_SECONDS = plugin_config.bili_video_normalize_max_min * 60
 
 # ffmpeg：用于裁掉视频开头的黑场淡入（QQ/NapCat 抽第 0 帧当封面，黑场会导致封面全黑）
 FFMPEG_CONFIGURED_PATH = (plugin_config.bili_ffmpeg_path or '').strip()
@@ -870,6 +873,54 @@ async def trim_leading_black(video_path: Path) -> Path | None:
     return trimmed_path
 
 
+async def normalize_video_for_qq(video_path: Path) -> Path:
+    """把视频重编码成 QQ 群视频更容易接受的标准格式。
+
+    B 站直链常见 H.264 High@5.1 + AAC 44.1kHz，部分客户端/服务端在处理
+    「视频消息」时会重新转码并丢掉音轨；这里统一成 Main@3.1 + AAC 48kHz。
+    任何失败都返回原片，绝不影响发送。
+    """
+    if not BILI_VIDEO_NORMALIZE:
+        return video_path
+    ffmpeg = await ensure_ffmpeg()
+    if ffmpeg is None:
+        return video_path
+
+    duration = await probe_video_duration(video_path)
+    if duration is not None and duration > BILI_VIDEO_NORMALIZE_MAX_SECONDS:
+        logger.info(
+            f'视频时长 {duration / 60:.1f} 分钟超过规范化上限 '
+            f'{BILI_VIDEO_NORMALIZE_MAX_SECONDS / 60:.0f} 分钟，跳过重编码'
+        )
+        return video_path
+
+    normalized = video_path.with_name(f'{video_path.stem}-qq.mp4')
+    logger.info(f'正在把视频重编码为 QQ 友好格式：{video_path.name}')
+    code, output = await run_ffmpeg(
+        [
+            ffmpeg, '-hide_banner', '-nostats', '-y',
+            '-i', str(video_path),
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+            '-profile:v', 'main', '-level', '3.1', '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2',
+            '-movflags', '+faststart',
+            str(normalized),
+        ],
+        timeout=900.0,
+    )
+    if code != 0 or not normalized.exists() or normalized.stat().st_size == 0:
+        logger.warning(f'规范化转码失败（返回码 {code}），改用原片：{output[-300:]}')
+        normalized.unlink(missing_ok=True)
+        return video_path
+
+    logger.success(
+        f'规范化完成：{normalized.name}'
+        f'（{normalized.stat().st_size / 1024 / 1024:.2f}MB）'
+    )
+    video_path.unlink(missing_ok=True)
+    return normalized
+
+
 async def process_video_or_original(video_path: Path) -> Path:
     """
     对下载好的视频做「开头黑场裁切」后处理。
@@ -877,20 +928,27 @@ async def process_video_or_original(video_path: Path) -> Path:
     任何异常都吞掉并返回原路径——后处理失败绝不能影响正常发送。
     ffmpeg 缺失时（若开启自动下载）会在第一次调用时后台下载一份。
     """
-    if not TRIM_BLACK_ENABLED:
-        return video_path
     if await ensure_ffmpeg() is None:
         return video_path
+
+    # 1) 裁掉开头黑场（可关闭）
+    if TRIM_BLACK_ENABLED:
+        try:
+            trimmed = await trim_leading_black(video_path)
+        except Exception as error:
+            logger.warning(f'黑场裁切异常，改用原片：{error}')
+            trimmed = None
+        if trimmed is not None:
+            # 采用裁切结果，删除原片
+            video_path.unlink(missing_ok=True)
+            video_path = trimmed
+
+    # 2) 统一重编码成 QQ 友好格式（失败自动回退原片）
     try:
-        trimmed = await trim_leading_black(video_path)
+        return await normalize_video_for_qq(video_path)
     except Exception as error:
-        logger.warning(f'黑场裁切异常，改用原片：{error}')
+        logger.warning(f'规范化转码异常，改用原片：{error}')
         return video_path
-    if trimmed is None:
-        return video_path
-    # 采用裁切结果，删除原片
-    video_path.unlink(missing_ok=True)
-    return trimmed
 
 
 async def generate_video_frame(video_path: Path, frame_path: Path) -> Path | None:

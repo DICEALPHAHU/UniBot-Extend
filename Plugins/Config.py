@@ -28,6 +28,14 @@ class Config(BaseModel):
     # 注意 base64 上传时字符串会膨胀约 33%，实际上限还取决于 OneBot 实现。
     bili_video_max_mb: int = 50
 
+    # 发送前是否把视频重编码成 QQ 更容易接受的格式
+    # （H.264 Main@3.1 + AAC 48kHz）。B 站直链常见 High@5.1 + 44.1kHz，
+    # 部分客户端/服务端在处理「视频消息」时会重新转码并丢掉音轨。
+    bili_video_normalize: bool = True
+
+    # 超过这个时长的视频不做规范化转码（转码耗时随长度增长）
+    bili_video_normalize_max_min: float = 20.0
+
     # 视频发送方式：
     #   video（默认）：作为「视频消息」发送，可在群里直接播放
     #   file：作为「群文件」上传，音轨一定保留，但需要点开下载后播放
