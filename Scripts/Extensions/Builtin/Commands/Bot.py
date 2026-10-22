@@ -1,7 +1,10 @@
 """内置扩展：机器人管理指令。"""
 
 import asyncio
+import os
 from typing import TypeAlias, override
+
+from dotenv import dotenv_values
 
 from nonebot_plugin_alconna import At
 from nonebot_plugin_uninfo import Uninfo
@@ -17,10 +20,34 @@ from Scripts.Utils import get_permission, turn_message_text
 # 创建唯一扩展实例，能力经实例装饰器登记
 extension = Extension(id='Bot', name=messages.builtin_extensions.bot, version='1.0.0', types=('command',))
 
+def _getenv(key: str, default: str = '') -> str:
+    """读取配置：优先进程环境变量，其次 .env 文件。
+
+    NoneBot 用 dotenv_values 解析 .env，不会写入 os.environ，
+    所以这里必须自己再读一遍，否则写在 .env 里的值拿不到。
+    """
+    value = os.environ.get(key)
+    if value is None:
+        try:
+            value = dotenv_values('.env').get(key)
+        except Exception:
+            value = None
+    return (value or default).strip()
+
+
 # 固定链接与群号信息（语言无关，文案模板见消息包 [commands.bot]）
-_DOCUMENT_URL = 'https://bot.mcjpg.dev/'
-_REPO_URL = 'https://github.com/MineJPGcraft/UniBot'
-_INVITE_GROUP = '962802248'
+# 本 fork 的信息都可以用环境变量覆盖，避免把个人信息写死在公开仓库里：
+#   BOT_MAINTAINER     维护者名字
+#   BOT_MAINTAINER_QQ  维护者 QQ（留空则只显示名字）
+#   BOT_REPO_URL       仓库地址
+#   BOT_DOCUMENT_URL   文档地址
+#   BOT_INVITE_GROUP   交流群号
+_DOCUMENT_URL = _getenv('BOT_DOCUMENT_URL', 'https://bot.mcjpg.dev/')
+_REPO_URL = _getenv('BOT_REPO_URL', 'https://github.com/DICEALPHAHU/UniBot-Extend')
+_UPSTREAM_URL = 'https://github.com/MineJPGcraft/UniBot'
+_MAINTAINER = _getenv('BOT_MAINTAINER', 'DICEALPHAHU')
+_MAINTAINER_QQ = _getenv('BOT_MAINTAINER_QQ')
+_INVITE_GROUP = _getenv('BOT_INVITE_GROUP', '962802248')
 
 
 @extension.register_command
@@ -132,8 +159,13 @@ class BotCommand(Command):
                 else messages.commands.bot.version_latest.format(current=version_manager.version)
             )
             yield version_line
-            yield messages.commands.bot.about_document.format(url=_DOCUMENT_URL)
+            if _MAINTAINER_QQ:
+                yield messages.commands.bot.about_maintainer_qq.format(name=_MAINTAINER, qq=_MAINTAINER_QQ)
+            else:
+                yield messages.commands.bot.about_maintainer.format(name=_MAINTAINER)
             yield messages.commands.bot.about_repo.format(url=_REPO_URL)
+            yield messages.commands.bot.about_upstream.format(url=_UPSTREAM_URL)
+            yield messages.commands.bot.about_document.format(url=_DOCUMENT_URL)
             yield messages.commands.bot.about_invite.format(group=_INVITE_GROUP)
 
     class Check(SubCommand['BotCommand']):

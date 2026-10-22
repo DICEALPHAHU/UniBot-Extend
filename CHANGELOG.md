@@ -30,6 +30,10 @@
   - 新增 `BILI_LIST_SOURCE=auto|bilibili_api|uapis` 开关：默认 `auto`（官方接口优先，失败且配了 token 时回退 uapis），可一键切回老方案
   - 抽帧改用 ffmpeg（移除 `opencv-python` 依赖），并同步了线上此前未入库的修复：NapCat 共享临时目录、多适配器下正确选取 OneBot bot、图片改发 bytes
 
+- **`/bot about` 支持自定义维护者信息**：新增「维护者（名字 / QQ）」「上游项目」两行，仓库地址改为本 fork；
+  全部可用环境变量覆盖（`BOT_MAINTAINER` / `BOT_MAINTAINER_QQ` / `BOT_REPO_URL` / `BOT_DOCUMENT_URL` / `BOT_INVITE_GROUP`），
+  QQ 建议只写在 `.env` 里。修复了 `os.getenv` 读不到 `.env` 的问题（NoneBot 用 `dotenv_values` 解析、不写入进程环境）。
+
 ## [v1.0.6-hu.1] - 2026-10-18
 
 ### 新增

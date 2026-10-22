@@ -87,6 +87,20 @@
 
 > **插件元数据与 `/help` 集成**：上述插件都声明了 `__plugin_meta__`（名称 / 描述 / 用法 / 版本 / 作者 **DICEALPHAHU**），因此能在 WebUI 的「插件」页正常显示并可单独启停；`Plugins/HelpEntry.py` 还会把这些指令补登记到 `/help` 的命令列表（含 Bili 的管理指令），群里发 `/help` 即可看到。
 
+### 0. 关于信息（`/bot about`）
+
+`Scripts/Extensions/Builtin/Commands/Bot.py` 里的 about 文案已改成 fork 的信息：
+
+- 维护者（名字 + 可选 QQ）
+- 本 fork 仓库地址
+- 上游项目地址
+- 项目文档、交流群
+
+这些值都可用环境变量覆盖（`BOT_MAINTAINER` / `BOT_MAINTAINER_QQ` / `BOT_REPO_URL` / `BOT_DOCUMENT_URL` / `BOT_INVITE_GROUP`），
+**建议把 QQ 放在 `.env` 里而不是写进代码**，避免公开仓库泄露个人信息。
+
+> 注：`image.mode = true` 时 about 走的是外部模板渲染（模板不在本仓库），这些文字只在文本模式下生效。
+
 ### 1. B站 UP 动态监控与视频推送
 
 `Plugins/Bili.py`
@@ -205,6 +219,11 @@ module_name = "nonebot.adapters.onebot.v11"
 | `BILI_VIDEO_KEEP_DAYS` | `3` | 视频临时文件保留天数 |
 | `BILI_FFMPEG_PATH` | 空 | ffmpeg 路径，留空自动探测 / 下载 |
 | `BILI_FFMPEG_AUTO_DOWNLOAD` | `true` | 找不到 ffmpeg 时自动下载 |
+| `BOT_MAINTAINER` | `DICEALPHAHU` | `/bot about` 里显示的维护者名字 |
+| `BOT_MAINTAINER_QQ` | 空 | 维护者 QQ（留空则只显示名字；放 `.env` 里，不要提交到仓库） |
+| `BOT_REPO_URL` | 本 fork 仓库 | `/bot about` 里显示的项目地址 |
+| `BOT_DOCUMENT_URL` | `https://bot.mcjpg.dev/` | `/bot about` 里显示的文档地址 |
+| `BOT_INVITE_GROUP` | 上游群号 | `/bot about` 里显示的交流群 |
 | `BILI_LIST_SOURCE` | `auto` | 监控数据源：`auto`（官方优先，失败回退 uapis）/ `bilibili_api` / `uapis` |
 | `BILI_HTTP_BACKEND` | `auto` | B站请求后端：`auto` / `httpx` / `curl_cffi` |
 | `BILI_COOKIE` | 空 | 直接注入 B 站 Cookie（`SESSDATA=...; bili_jct=...`），留空则用扫码登录保存的凭证 |
