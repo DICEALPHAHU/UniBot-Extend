@@ -1231,6 +1231,16 @@ def _build_named_video(video_path: Path, title: str, bvid: str) -> Path:
     return named_path
 
 
+def _video_message(video_path: Path) -> Message:
+    """构造视频消息。
+
+    不用 MessageSegment.video()，因为它会自动附加
+    cache / proxy / timeout 三个 None 字段；实测部分 NapCat 版本收到这些
+    空字段后上传行为会变（群里播放没有声音）。这里只传 file，且用纯路径。
+    """
+    return Message(MessageSegment('video', {'file': str(video_path.absolute())}))
+
+
 async def _send_video_to_group(bot, group_info: str, video_path: Path, title: str, bvid: str) -> None:
     """把本地视频作为群视频发送到 MESSAGE_GROUPS 里的某个群。
 
@@ -1258,10 +1268,7 @@ async def _send_video_to_group(bot, group_info: str, video_path: Path, title: st
         else:
             # 必须包成 Message：OneBot 的 send_group_msg 只接受 str/Message，
             # 直接传裸 MessageSegment 会被适配器拒绝
-            await bot.send_group_msg(
-                group_id=group_id,
-                message=Message(MessageSegment.video(named_path.absolute().as_uri())),
-            )
+            await bot.send_group_msg(group_id=group_id, message=_video_message(named_path))
         logger.info(f'视频已推送至群 {group_info}：{named_path.name}（方式：{BILI_VIDEO_SEND_MODE}）')
     finally:
         # 发送完毕即删除，避免 Temp 目录堆积大文件
@@ -1285,10 +1292,7 @@ async def _send_video_to_current_group(bot, group_id: int, video_path: Path, tit
                 name=named_path.name,
             )
         else:
-            await bot.send_group_msg(
-                group_id=str(group_id),
-                message=Message(MessageSegment.video(named_path.absolute().as_uri())),
-            )
+            await bot.send_group_msg(group_id=str(group_id), message=_video_message(named_path))
         logger.info(f'视频已推送至群 {group_id}：{named_path.name}（方式：{BILI_VIDEO_SEND_MODE}）')
     finally:
         named_path.unlink(missing_ok=True)
