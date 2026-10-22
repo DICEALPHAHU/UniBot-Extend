@@ -88,6 +88,8 @@ BILI_VIDEO_MAX_MB = plugin_config.bili_video_max_mb
 BILI_VIDEO_MAX_BYTES = BILI_VIDEO_MAX_MB * 1024 * 1024
 # 视频成品保留天数
 BILI_VIDEO_KEEP_DAYS = plugin_config.bili_video_keep_days
+# 视频发送方式：video（视频消息）/ file（群文件）
+BILI_VIDEO_SEND_MODE = (plugin_config.bili_video_send_mode or 'video').strip().lower()
 
 # ffmpeg：用于裁掉视频开头的黑场淡入（QQ/NapCat 抽第 0 帧当封面，黑场会导致封面全黑）
 FFMPEG_CONFIGURED_PATH = (plugin_config.bili_ffmpeg_path or '').strip()
@@ -1164,13 +1166,22 @@ async def _send_video_to_group(bot, group_info: str, video_path: Path, title: st
     size_mb = named_path.stat().st_size / 1024 / 1024
     logger.info(f'正在向群 {group_info} 发送视频：{named_path.name}（{size_mb:.2f}MB）')
     try:
-        # 必须包成 Message：OneBot 的 send_group_msg 只接受 str/Message，
-        # 直接传裸 MessageSegment 会被适配器拒绝
-        await bot.send_group_msg(
-            group_id=group_id,
-            message=Message(MessageSegment.video(named_path.absolute().as_uri())),
-        )
-        logger.info(f'视频已推送至群 {group_info}：{named_path.name}')
+        if BILI_VIDEO_SEND_MODE == 'file':
+            # 群文件方式：音轨一定保留（代价是对方要点开下载）
+            await bot.call_api(
+                'upload_group_file',
+                group_id=int(group_id),
+                file=str(named_path.absolute()),
+                name=named_path.name,
+            )
+        else:
+            # 必须包成 Message：OneBot 的 send_group_msg 只接受 str/Message，
+            # 直接传裸 MessageSegment 会被适配器拒绝
+            await bot.send_group_msg(
+                group_id=group_id,
+                message=Message(MessageSegment.video(named_path.absolute().as_uri())),
+            )
+        logger.info(f'视频已推送至群 {group_info}：{named_path.name}（方式：{BILI_VIDEO_SEND_MODE}）')
     finally:
         # 发送完毕即删除，避免 Temp 目录堆积大文件
         named_path.unlink(missing_ok=True)
@@ -1185,11 +1196,19 @@ async def _send_video_to_current_group(bot, group_id: int, video_path: Path, tit
     size_mb = named_path.stat().st_size / 1024 / 1024
     logger.info(f'正在向群 {group_id} 发送视频：{named_path.name}（{size_mb:.2f}MB）')
     try:
-        await bot.send_group_msg(
-            group_id=str(group_id),
-            message=Message(MessageSegment.video(named_path.absolute().as_uri())),
-        )
-        logger.info(f'视频已推送至群 {group_id}：{named_path.name}')
+        if BILI_VIDEO_SEND_MODE == 'file':
+            await bot.call_api(
+                'upload_group_file',
+                group_id=int(group_id),
+                file=str(named_path.absolute()),
+                name=named_path.name,
+            )
+        else:
+            await bot.send_group_msg(
+                group_id=str(group_id),
+                message=Message(MessageSegment.video(named_path.absolute().as_uri())),
+            )
+        logger.info(f'视频已推送至群 {group_id}：{named_path.name}（方式：{BILI_VIDEO_SEND_MODE}）')
     finally:
         named_path.unlink(missing_ok=True)
 

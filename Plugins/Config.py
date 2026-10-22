@@ -28,6 +28,12 @@ class Config(BaseModel):
     # 注意 base64 上传时字符串会膨胀约 33%，实际上限还取决于 OneBot 实现。
     bili_video_max_mb: int = 50
 
+    # 视频发送方式：
+    #   video（默认）：作为「视频消息」发送，可在群里直接播放
+    #   file：作为「群文件」上传，音轨一定保留，但需要点开下载后播放
+    # 部分客户端/服务端在处理视频消息时会重新转码并丢掉音轨，可用 file 规避。
+    bili_video_send_mode: str = 'video'
+
     # 保留最近 N 天的视频临时/成品文件
     bili_video_keep_days: int = 3
 
