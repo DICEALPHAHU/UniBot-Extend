@@ -1231,6 +1231,20 @@ def _build_named_video(video_path: Path, title: str, bvid: str) -> Path:
     return named_path
 
 
+async def _delayed_unlink(path: Path, delay: float = 180.0) -> None:
+    """延迟删除文件。
+
+    NapCat 的 send_group_msg 是「接口立刻返回、上传在后台继续」，
+    发完立刻 unlink 会把上传截断（表现为视频能播但音轨丢失），
+    所以这里等一段时间再删，交给定期清理兜底。
+    """
+    await asyncio.sleep(delay)
+    try:
+        path.unlink(missing_ok=True)
+    except Exception as error:
+        logger.debug(f'延迟删除失败：{path.name}：{error}')
+
+
 def _video_message(video_path: Path) -> Message:
     """构造视频消息。
 
@@ -1268,11 +1282,13 @@ async def _send_video_to_group(bot, group_info: str, video_path: Path, title: st
         else:
             # 必须包成 Message：OneBot 的 send_group_msg 只接受 str/Message，
             # 直接传裸 MessageSegment 会被适配器拒绝
-            await bot.send_group_msg(group_id=group_id, message=_video_message(named_path))
+            message = _video_message(named_path)
+            logger.info(f'视频消息 payload：{[(seg.type, seg.data) for seg in message]}')
+            await bot.send_group_msg(group_id=group_id, message=message)
         logger.info(f'视频已推送至群 {group_info}：{named_path.name}（方式：{BILI_VIDEO_SEND_MODE}）')
     finally:
-        # 发送完毕即删除，避免 Temp 目录堆积大文件
-        named_path.unlink(missing_ok=True)
+        # 不能立刻删除：NapCat 上传是异步的，删早了会把音轨截断
+        asyncio.create_task(_delayed_unlink(named_path))
 
 
 async def _send_video_to_current_group(bot, group_id: int, video_path: Path, title: str, bvid: str = '') -> None:
@@ -1292,10 +1308,13 @@ async def _send_video_to_current_group(bot, group_id: int, video_path: Path, tit
                 name=named_path.name,
             )
         else:
-            await bot.send_group_msg(group_id=str(group_id), message=_video_message(named_path))
+            message = _video_message(named_path)
+            logger.info(f'视频消息 payload：{[(seg.type, seg.data) for seg in message]}')
+            await bot.send_group_msg(group_id=str(group_id), message=message)
         logger.info(f'视频已推送至群 {group_id}：{named_path.name}（方式：{BILI_VIDEO_SEND_MODE}）')
     finally:
-        named_path.unlink(missing_ok=True)
+        # 不能立刻删除：NapCat 上传是异步的，删早了会把音轨截断
+        asyncio.create_task(_delayed_unlink(named_path))
 
 # 8. 清理过期临时文件
 async def clean_expired_temp_files():
