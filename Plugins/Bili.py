@@ -21,6 +21,7 @@ from bilibili_api import user, video
 from bilibili_api.exceptions import ResponseCodeException
 from bilibili_api.utils.aid_bvid_transformer import bvid2aid
 from bilibili_api.video import (
+    AudioStreamDownloadURL,
     VideoCodecs,
     VideoDownloadURLDataDetecter,
     VideoQuality,
@@ -484,12 +485,61 @@ def _pick_stream_url(stream) -> str:
     return stream.url or ''
 
 
+async def _stream_download(url: str, path: Path, max_bytes: int, *, timeout: float = 300.0) -> int:
+    """流式下载到本地文件，超过 max_bytes 立即中断。"""
+    headers = {'User-Agent': USER_AGENT, 'Referer': 'https://www.bilibili.com/'}
+    written = 0
+    async with AsyncClient(timeout=timeout, verify=False) as client, client.stream(
+        'GET', url, headers=headers
+    ) as response:
+        response.raise_for_status()
+        declared_size = int(response.headers.get('content-length') or 0)
+        if declared_size > max_bytes:
+            raise ValueError(f'文件体积 {declared_size / 1024 / 1024:.1f}MB 超过上限')
+        with open(path, 'wb') as file:
+            async for chunk in response.aiter_bytes():
+                if not chunk:
+                    continue
+                written += len(chunk)
+                if written > max_bytes:
+                    raise ValueError(f'文件超过上限 {max_bytes / 1024 / 1024:.0f}MB，已中断下载')
+                file.write(chunk)
+    return written
+
+
+async def _mux_av(video_path: Path, audio_path: Path) -> Path | None:
+    """用 ffmpeg 把分离的音视频合成一个 mp4（-c copy，不重编码）。"""
+    ffmpeg = await ensure_ffmpeg()
+    if ffmpeg is None:
+        logger.warning('未找到 ffmpeg，无法把音轨合进视频')
+        return None
+    merged = video_path.with_name(f'{video_path.stem}-merged.mp4')
+    code, output = await run_ffmpeg(
+        [
+            ffmpeg, '-hide_banner', '-nostats', '-y',
+            '-i', str(video_path),
+            '-i', str(audio_path),
+            '-c', 'copy', '-movflags', '+faststart',
+            str(merged),
+        ],
+        timeout=600.0,
+    )
+    if code != 0 or not merged.exists() or merged.stat().st_size == 0:
+        logger.warning(f'音视频合流失败（返回码 {code}）：{output[-200:]}')
+        merged.unlink(missing_ok=True)
+        return None
+    video_path.unlink(missing_ok=True)
+    audio_path.unlink(missing_ok=True)
+    return merged
+
+
 async def download_bilibili_video(bv_id: str) -> Path | None:
     """
     下载 B 站视频为本地 mp4 文件，返回文件路径（失败返回 None）。
 
-    B 站当前返回的是 MP4StreamDownloadURL（已合流的 mp4，自带音频），
-    因此无需 ffmpeg 合流即可直接发送。
+    匿名请求时 B 站返回已合流的 MP4（自带音频）；带上登录凭证后返回的是
+    DASH 流（视频、音频分开），这时必须把音轨下载下来再合流，
+    否则发出去的视频没有声音。
 
     文件名带时间戳：后台监控与手动 .bv 可能同时下载同一稿件，
     若共用 {bv_id}.mp4 会互相覆盖/删除。
@@ -526,6 +576,11 @@ async def download_bilibili_video(bv_id: str) -> Path | None:
             logger.error('未找到合适的视频流')
             return None
 
+        # DASH 流会把音频单独给出来（登录后就是这种），必须一并下载
+        audio_stream = next(
+            (stream for stream in best_streams[1:] if isinstance(stream, AudioStreamDownloadURL)),
+            None,
+        )
         stream_url = _pick_stream_url(best_streams[0])
         if not stream_url:
             logger.error('视频流地址为空')
@@ -533,33 +588,26 @@ async def download_bilibili_video(bv_id: str) -> Path | None:
         if not stream_url.startswith(('http://', 'https://')):
             stream_url = f'https:{stream_url}'
 
-        # 流式下载；超过体积上限立即中断，不把磁盘写满
-        async with AsyncClient(timeout=120, verify=False) as client, client.stream(
-            'GET',
-            stream_url,
-            headers={'User-Agent': USER_AGENT, 'Referer': 'https://www.bilibili.com/'},
-        ) as response:
-            response.raise_for_status()
-            declared_size = int(response.headers.get('content-length') or 0)
-            if declared_size > BILI_VIDEO_MAX_BYTES:
-                logger.warning(
-                    f'视频 {bv_id} 体积 {declared_size / 1024 / 1024:.1f}MB 超过上限 '
-                    f'{BILI_VIDEO_MAX_BYTES / 1024 / 1024:.0f}MB，跳过下载'
-                )
-                return None
-            written = 0
-            with open(video_path, 'wb') as file:
-                async for chunk in response.aiter_bytes():
-                    if not chunk:
-                        continue
-                    written += len(chunk)
-                    if written > BILI_VIDEO_MAX_BYTES:
-                        raise ValueError(
-                            f'视频超过上限 {BILI_VIDEO_MAX_BYTES / 1024 / 1024:.0f}MB，已中断下载'
-                        )
-                    file.write(chunk)
-
+        await _stream_download(stream_url, video_path, BILI_VIDEO_MAX_BYTES, timeout=300.0)
         logger.info(f'视频下载完成：{video_path.name}（{video_path.stat().st_size / 1024 / 1024:.2f}MB）')
+
+        if audio_stream is not None:
+            audio_url = _pick_stream_url(audio_stream)
+            if audio_url and not audio_url.startswith(('http://', 'https://')):
+                audio_url = f'https:{audio_url}'
+            audio_path = video_path.with_name(f'{video_path.stem}_audio.m4a')
+            try:
+                await _stream_download(audio_url, audio_path, 256 * 1024 * 1024, timeout=300.0)
+                logger.info(f'音频下载完成：{audio_path.name}（{audio_path.stat().st_size / 1024:.0f}KB）')
+                merged = await _mux_av(video_path, audio_path)
+                if merged is not None:
+                    logger.info(f'音视频合流完成：{merged.name}（{merged.stat().st_size / 1024 / 1024:.2f}MB）')
+                    return merged
+                logger.warning('合流失败，退回只有画面的视频（会没有声音）')
+            except Exception as error:
+                logger.warning(f'音轨下载/合流失败：{error}')
+                audio_path.unlink(missing_ok=True)
+
         return video_path
     except Exception as e:
         logger.error(f'下载视频失败：{e}')
@@ -1222,13 +1270,35 @@ def _build_named_video(video_path: Path, title: str, bvid: str) -> Path:
     date_prefix = datetime.now().strftime('%Y-%m-%d')
     # 去掉文件名非法字符（Windows 下会重命名失败）
     safe_title = re.sub(r'[\\/:*?"<>|\r\n\t]', '_', title).strip(' .') or bvid
-    # 标题过长会超出文件系统上限，截断到 80 字符
-    named_path = VIDEO_DIR / f'{date_prefix}-每日新闻-{safe_title[:80]}.mp4'
+    # 标题过长会超出文件系统上限，截断到 80 字符；
+    # 再加一段随机后缀：QQ/NapCat 可能按文件名去重，复用上次（可能被截断的）上传结果
+    suffix = f'{int(datetime.now().timestamp())}-{os.urandom(2).hex()}'
+    named_path = VIDEO_DIR / f'{date_prefix}-每日新闻-{safe_title[:72]}-{suffix}.mp4'
     if named_path.resolve() != video_path.resolve():
         if named_path.exists():
             named_path.unlink(missing_ok=True)
         video_path.replace(named_path)
     return named_path
+
+
+async def _log_video_streams(video_path: Path) -> None:
+    """发送前把文件的音视频流信息记进日志，并留一份到 Data/Bili/last_sent.mp4 便于排查。"""
+    try:
+        ffmpeg = get_ffmpeg_path() or _resolve_ffmpeg_path()
+        if ffmpeg:
+            probe = str(Path(ffmpeg).with_name('ffprobe'))
+            code, output = await run_ffmpeg(
+                [probe, '-v', 'error', '-show_entries', 'stream=codec_type,codec_name',
+                 '-of', 'csv=p=0', str(video_path)],
+                timeout=30.0,
+            )
+            if code == 0:
+                logger.info(f'发送前文件流：{output.strip().replace(chr(10), ",")}')
+        debug_dir = Path('Data/Bili')
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(video_path, debug_dir / 'last_sent.mp4')
+    except Exception as error:
+        logger.debug(f'记录发送文件信息失败：{error}')
 
 
 async def _delayed_unlink(path: Path, delay: float = 180.0) -> None:
@@ -1284,6 +1354,7 @@ async def _send_video_to_group(bot, group_info: str, video_path: Path, title: st
             # 直接传裸 MessageSegment 会被适配器拒绝
             message = _video_message(named_path)
             logger.info(f'视频消息 payload：{[(seg.type, seg.data) for seg in message]}')
+            await _log_video_streams(named_path)
             await bot.send_group_msg(group_id=group_id, message=message)
         logger.info(f'视频已推送至群 {group_info}：{named_path.name}（方式：{BILI_VIDEO_SEND_MODE}）')
     finally:
@@ -1310,6 +1381,7 @@ async def _send_video_to_current_group(bot, group_id: int, video_path: Path, tit
         else:
             message = _video_message(named_path)
             logger.info(f'视频消息 payload：{[(seg.type, seg.data) for seg in message]}')
+            await _log_video_streams(named_path)
             await bot.send_group_msg(group_id=str(group_id), message=message)
         logger.info(f'视频已推送至群 {group_id}：{named_path.name}（方式：{BILI_VIDEO_SEND_MODE}）')
     finally:
