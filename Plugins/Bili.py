@@ -219,6 +219,29 @@ async def b23_to_long_url(short_url: str, max_retry: int = 2) -> str:
     return short_url
 
 
+# B 站分享文案里常见的几种形态：完整链接、短链（b23.tv / bili2233.cn）、裸 BV 号
+_SHARE_LINK_PATTERN = re.compile(
+    r'https?://[^\s【】]+'
+    r'|(?:b23\.tv|bili2233\.cn)/[A-Za-z0-9]+'
+    r'|BV[0-9A-Za-z]{10}'
+)
+# 分享文案里紧跟在链接后面的标点，抠链接时要一并去掉
+_TRAILING_PUNCTUATION = '，。、；：！？）】》」』"\'.,;:!?)>]'
+
+
+def extract_video_target(text: str) -> str:
+    """从分享文案里抠出视频链接或 BV 号。
+
+    B 站 App 的分享格式是「【视频标题】https://b23.tv/xxxx」，
+    用户整段粘过来时不能把标题也当成链接去请求。
+    """
+    raw = (text or '').strip()
+    match = _SHARE_LINK_PATTERN.search(raw)
+    if not match:
+        return raw
+    return match.group().rstrip(_TRAILING_PUNCTUATION)
+
+
 def simplify_bilibili_url(full_url: str) -> str:
     """提取 BV 号并生成标准链接。"""
     bv_match = BV_PATTERN.search(full_url)
@@ -1556,9 +1579,15 @@ async def handle_test_vsdu(bot: Bot, event: GroupMessageEvent, args: Message = C
     if not BILI_WATCHER_ENABLED:
         await test_vsdu.finish('插件已禁用！')
 
-    input_url = args.extract_plain_text().strip()
-    if not input_url:
-        await test_vsdu.finish('请输入有效的B站视频链接（支持b23.tv短链接）！')
+    raw_text = args.extract_plain_text().strip()
+    if not raw_text:
+        await test_vsdu.finish(
+            '请输入B站视频链接或 BV 号（支持 b23.tv 短链，也可以直接粘贴分享文案）！'
+        )
+    # 支持直接粘贴「【视频标题】https://b23.tv/xxxx」这种分享文案
+    input_url = extract_video_target(raw_text)
+    if input_url != raw_text:
+        logger.debug(f'从分享文案里提取到链接：{input_url}')
 
     # 处理短链接
     long_url = input_url
