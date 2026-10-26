@@ -305,7 +305,7 @@ __plugin_meta__ = PluginMetadata(
     name='Minecraft 玩家卡',
     description='查询正版 Java 玩家的皮肤与披风，渲染有厚度的正/背面卡片（数据来源：Mojang）',
     usage='.player <玩家名或 UUID>\n示例：.player Notch',
-    extra={'author': 'DICEALPHAHU', 'version': '1.1'},
+    extra={'author': 'vvvvdg', 'version': '1.1'},
 )
 
 register_help_commands([
