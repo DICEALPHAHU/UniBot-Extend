@@ -115,14 +115,13 @@ def build_list_card(
     name_font = _font(17)
     small_font = _font(15)
 
-    # 标题
-    title = f'{sections[0][0]} 在线玩家' if len(sections) == 1 else '在线玩家'
-    draw.text((PADDING, PADDING - 6), title, font=title_font, fill=TITLE_COLOR)
-    subtitle = (
-        f'共 {len(sections)} 个服务器 · {total_players} 人在线'
-        if len(sections) > 1
-        else f'{total_players} 人在线'
-    )
+    # 标题：只有一台服务器时不重复显示服务器名
+    single_server = len(sections) == 1
+    draw.text((PADDING, PADDING - 6), '在线玩家', font=title_font, fill=TITLE_COLOR)
+    if single_server:
+        subtitle = f'{sections[0][0]} · {total_players} 人在线'
+    else:
+        subtitle = f'共 {len(sections)} 个服务器 · {total_players} 人在线'
     draw.text((PADDING, PADDING + 34), subtitle, font=subtitle_font, fill=SUBTITLE_COLOR)
 
     y = PADDING + 66
@@ -132,13 +131,15 @@ def build_list_card(
 
     for server_name, (real, fake) in sections:
         count = len(real) + len(fake)
-        draw.text((PADDING, y), server_name, font=section_font, fill=ACCENT)
-        count_text = f'{count} 人'
-        width = draw.textlength(count_text, font=small_font)
-        draw.text((CARD_WIDTH - PADDING - width, y + 3), count_text, font=small_font, fill=SUBTITLE_COLOR)
-        y += 30
-        draw.line((PADDING, y, CARD_WIDTH - PADDING, y), fill=DIVIDER_COLOR, width=1)
-        y += 12
+        if not single_server:
+            # 多服务器时才画分组标题；单服务器已经写进副标题
+            draw.text((PADDING, y), server_name, font=section_font, fill=ACCENT)
+            count_text = f'{count} 人'
+            width = draw.textlength(count_text, font=small_font)
+            draw.text((CARD_WIDTH - PADDING - width, y + 3), count_text, font=small_font, fill=SUBTITLE_COLOR)
+            y += 30
+            draw.line((PADDING, y, CARD_WIDTH - PADDING, y), fill=DIVIDER_COLOR, width=1)
+            y += 12
 
         if count == 0:
             draw.text((PADDING + 4, y + 6), '没有玩家在线', font=name_font, fill=SUBTITLE_COLOR)
