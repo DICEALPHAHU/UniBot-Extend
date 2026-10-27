@@ -45,7 +45,9 @@ class ListCommand(Command):
         _, response = await self.get_players(server_flag)
         if not isinstance(response, dict):
             return response
-        # 直接返回 PNG 字节：框架会把 bytes 包成图片消息发送
+        # 默认发纯文字；只有开启 list_image 才渲染成图片，失败自动回退文本
+        if not config.list_image:
+            return await turn_message_text(self.list_handler(response))
         try:
             return await self.render_card(response)
         except Exception as error:

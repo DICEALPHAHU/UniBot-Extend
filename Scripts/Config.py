@@ -49,6 +49,8 @@ class Config(BaseModel):
     sync_sensitive_words: list[str] = []
 
     list_compatible_mode: bool = False
+    # /list 是否渲染成图片（默认纯文字；图片失败会自动回退文本）
+    list_image: bool = False
     whitelist_command: str = 'whitelist'
 
     sync_color_source: str = 'gray'

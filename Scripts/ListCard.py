@@ -13,13 +13,14 @@ from PIL import Image, ImageDraw, ImageFont
 # 卡片尺寸与配色
 CARD_WIDTH = 760
 PADDING = 28
-BACKGROUND = (32, 33, 36, 255)
-PANEL = (24, 25, 28, 255)
-TITLE_COLOR = (245, 245, 245, 255)
-SUBTITLE_COLOR = (154, 160, 166, 255)
-NAME_COLOR = (232, 234, 237, 255)
-DIVIDER_COLOR = (58, 60, 64, 255)
-ACCENT = (129, 182, 128, 255)
+# 淡绿色主题
+BACKGROUND = (232, 245, 233, 255)   # 淡绿底
+PANEL = (247, 252, 247, 255)        # 更浅的卡片底
+TITLE_COLOR = (27, 94, 32, 255)     # 深绿标题
+SUBTITLE_COLOR = (96, 125, 99, 255) # 灰绿副标题
+NAME_COLOR = (38, 50, 38, 255)      # 近黑正文
+DIVIDER_COLOR = (197, 225, 199, 255)
+ACCENT = (46, 125, 50, 255)         # 主绿色
 
 # 头像与布局
 AVATAR_SIZE = 44
@@ -65,14 +66,14 @@ def _font(size: int):
 def _round_avatar(path: Path | None, size: int = AVATAR_SIZE) -> Image.Image:
     """把头像裁成圆形；没有头像时用灰底占位。"""
     if path is None or not Path(path).exists():
-        image = Image.new('RGBA', (size, size), (60, 62, 66, 255))
+        image = Image.new('RGBA', (size, size), (198, 219, 200, 255))
     else:
         try:
             avatar = Image.open(path).convert('RGBA')
             avatar = avatar.resize((size, size), Image.Resampling.LANCZOS)
             image = avatar
         except Exception:
-            image = Image.new('RGBA', (size, size), (60, 62, 66, 255))
+            image = Image.new('RGBA', (size, size), (198, 219, 200, 255))
     mask = Image.new('L', (size, size), 0)
     ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
     result = Image.new('RGBA', (size, size), (0, 0, 0, 0))
