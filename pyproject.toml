@@ -17,6 +17,10 @@ dependencies = [
     # curl_cffi：B 站请求的浏览器 TLS 指纹（可用 BILI_HTTP_BACKEND=httpx 关闭）
     "curl_cffi>=0.13.0,<0.15.0",
     "nonebot-adapter-onebot",
+    # 课表插件（Plugins/Kebiao.py）：读教务导出的 xls/xlsx 并画图
+    "xlrd>=2.0.1",
+    "openpyxl>=3.1.0",
+    "Pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]
@@ -75,6 +79,7 @@ plugins = [
     { module_name = "Plugins.Motou", enabled = true },
     { module_name = "Plugins.Poke", enabled = true },
     { module_name = "Plugins.Guessnum", enabled = true },
+    { module_name = "Plugins.Kebiao", enabled = true },
 ]
 
 [[tool.nonebot.adapters]]
