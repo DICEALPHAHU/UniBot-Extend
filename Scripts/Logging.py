@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sys
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -153,15 +154,40 @@ def setup_level_colors() -> None:
     logger.level('ERROR', color='<light-red>')
 
 
+# 日志级别名 -> loguru 数值（SUCCESS 是本项目自定义级别）
+_LEVEL_NAMES = {
+    'TRACE': 5,
+    'DEBUG': 10,
+    'INFO': 20,
+    'SUCCESS': 25,
+    'WARNING': 30,
+    'ERROR': 40,
+    'CRITICAL': 50,
+}
+
+
+def _resolve_level(env_name: str, default: str = 'INFO') -> int:
+    """从环境变量读取日志级别，默认 INFO。
+
+    MC 服务器上玩家用 WorldEdit 连续执行指令时，每条指令都会产生一个事件，
+    TRACE 级别会把每个事件的完整内容写进日志（实测一分钟 8 万行），
+    I/O 直接把事件循环拖死。默认 INFO 可以避免这种事件洪水。
+    """
+    value = (os.getenv(env_name) or default).strip().upper()
+    return _LEVEL_NAMES.get(value, _LEVEL_NAMES[default])
+
+
 def configure_handlers(log_path: Path | None = None) -> None:
     """在 NoneBot 初始化前配置日志处理器，保证启动早期日志格式统一。"""
     setup_level_colors()
     # logger.configure 传 handlers 会先移除全部旧处理器；
     # NoneBot 初始化时会重置 patcher 与 extra，故此处先兜底设置，init 后由 configure_logging 恢复
+    console_level = _resolve_level('LOG_CONSOLE_LEVEL')
+    file_level = _resolve_level('LOG_FILE_LEVEL')
     handlers: list[HandlerConfig] = [
         {
             'sink': sys.stdout,
-            'level': 0,
+            'level': console_level,
             'diagnose': False,
             'filter': default_filter,
             'format': console_format,
@@ -172,7 +198,7 @@ def configure_handlers(log_path: Path | None = None) -> None:
         handlers.append(
             {
                 'sink': log_path / '{time}.log',
-                'level': 0,
+                'level': file_level,
                 'rotation': '1 day',
                 'encoding': 'Utf-8',
                 'diagnose': False,

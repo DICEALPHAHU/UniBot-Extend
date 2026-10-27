@@ -224,6 +224,7 @@ module_name = "nonebot.adapters.onebot.v11"
 | `BOT_REPO_URL` | 本 fork 仓库 | `/bot about` 里显示的项目地址 |
 | `BOT_DOCUMENT_URL` | `https://bot.mcjpg.dev/` | `/bot about` 里显示的文档地址 |
 | `BOT_INVITE_GROUP` | 上游群号 | `/bot about` 里显示的交流群 |
+| `LOG_FILE_LEVEL` | `INFO` | 文件日志级别；排查问题时临时设成 `DEBUG` 或 `TRACE`（默认 INFO，避免事件洪水把循环拖死） |
 | `BILI_LIST_SOURCE` | `auto` | 监控数据源：`auto`（官方优先，失败回退 uapis）/ `bilibili_api` / `uapis` |
 | `BILI_HTTP_BACKEND` | `auto` | B站请求后端：`auto` / `httpx` / `curl_cffi` |
 | `BILI_COOKIE` | 空 | 直接注入 B 站 Cookie（`SESSDATA=...; bili_jct=...`），留空则用扫码登录保存的凭证 |

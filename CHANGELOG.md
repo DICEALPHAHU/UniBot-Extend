@@ -34,6 +34,8 @@
   全部可用环境变量覆盖（`BOT_MAINTAINER` / `BOT_MAINTAINER_QQ` / `BOT_REPO_URL` / `BOT_DOCUMENT_URL` / `BOT_INVITE_GROUP`），
   QQ 建议只写在 `.env` 里。修复了 `os.getenv` 读不到 `.env` 的问题（NoneBot 用 `dotenv_values` 解析、不写入进程环境）。
 
+- **日志级别改为可配置，默认收窄到 INFO**：玩家在服务器上连续执行 WorldEdit 指令时，每条指令都会产生一个 `PlayerCommandEvent`，原来 TRACE 级别会把每个事件的完整内容写进日志（实测每分钟 8 万行），磁盘 I/O 直接把事件循环拖死 —— 表现为机器人"没反应"、健康检查超时。现在 `LOG_CONSOLE_LEVEL` / `LOG_FILE_LEVEL` 可配，默认 INFO，需要排查时再临时调低。
+
 ## [v1.0.6-hu.1] - 2026-10-18
 
 ### 新增
