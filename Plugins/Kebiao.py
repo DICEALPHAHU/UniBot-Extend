@@ -29,6 +29,7 @@ from nonebot.adapters.onebot.v11 import (
     MessageEvent,
     MessageSegment,
 )
+from nonebot.log import logger
 from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
 from PIL import Image, ImageDraw, ImageFont
@@ -1021,8 +1022,8 @@ async def _reminder_loop() -> None:
     while True:
         try:
             await _tick_reminders()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.exception(f'[Kebiao] 上课提醒循环异常：{exc}')
         await asyncio.sleep(REMIND_TICK)
 
 
