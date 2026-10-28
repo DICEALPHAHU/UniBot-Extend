@@ -60,10 +60,6 @@ sync_sensitive_words = ["敏感词", "你妈", "色图"]
 # 开启后通过监听玩家进入和离开来更新玩家列表，但可能并不准确。
 list_compatible_mode = false
 
-# /list 是否渲染成图片卡片（需要 Pillow，无需 html2pic）
-# false = 纯文字（默认）；true = 图片
-list_image = false
-
 # 白名单的指令，默认为 whitelist 指令。
 whitelist_command = "whitelist"
 

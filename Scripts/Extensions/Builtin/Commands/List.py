@@ -8,15 +8,12 @@ from nonebot_plugin_alconna import Match
 
 from Scripts import Globals
 from Scripts.Config import config
-from Scripts.Logging import logger
 from Scripts.Extensions import Command, Extension, FileAsset
 from Scripts.Globals import player_list_cache
 from Scripts.Managers import cache_manager
 from Scripts.Messages import messages
 from Scripts.Network import fetch_player_avatars
 from Scripts.Utils import turn_message_text
-
-from Scripts.ListCard import build_list_card
 
 extension = Extension(id='List', name=messages.builtin_extensions.list, version='1.0.0', types=('command',))
 
@@ -33,26 +30,13 @@ class ListCommand(Command):
     def declare(self) -> None:
         self.register_option('server', str, description=messages.commands.list.option_server)
 
-    async def render_card(self, players: dict) -> bytes:
-        """把玩家列表渲染成图片（Pillow 绘制，不依赖 html2pic/playwright）。"""
-        player_names = {name for groups in players.values() for group in groups for name in group}
-        avatars = await self.ensure_avatars(list(player_names)) if player_names else {}
-        return await asyncio.to_thread(build_list_card, players, avatars, config.bot_prefix)
-
     @override
     async def handler(self, server: Match[str]):
         server_flag = server.result if server.available else None
         _, response = await self.get_players(server_flag)
         if not isinstance(response, dict):
             return response
-        # 默认发纯文字；只有开启 list_image 才渲染成图片，失败自动回退文本
-        if not config.list_image:
-            return await turn_message_text(self.list_handler(response))
-        try:
-            return await self.render_card(response)
-        except Exception as error:
-            logger.warning(f'玩家列表渲染失败，回退文本：{error}')
-            return await turn_message_text(self.list_handler(response))
+        return await turn_message_text(self.list_handler(response))
 
     @override
     async def image_handler(self, server: Match[str]) -> bytes | None:
@@ -61,11 +45,15 @@ class ListCommand(Command):
         _, response = await self.get_players(server_flag)
         if not isinstance(response, dict):
             return response
-        try:
-            return await self.render_card(response)
-        except Exception as error:
-            logger.warning(f'玩家列表渲染失败：{error}')
-            return None
+        player_names = {name for groups in response.values() for name in groups[0]}
+        avatars = await self.ensure_avatars(list(player_names))
+        # 头像为本地文件，用 FileAsset 包装，由渲染器决定如何引用（如 html2pic 需 file:// 前缀）
+        wrapped_avatars = {name: FileAsset(Path(path)) for name, path in avatars.items()}
+        return await extension.render_image(
+            'List',
+            (600, 800),
+            context={'player_list': response, 'avatars': wrapped_avatars},
+        )
 
     async def ensure_avatars(self, player_names: list):
         """获取玩家头像文件路径：本地已缓存直接复用，缺失的下载后落盘。"""

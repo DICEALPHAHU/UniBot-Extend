@@ -209,6 +209,32 @@
 - **隐私**：只保存 `下课表的人` 的 QQ 号与课程名，不含学号、姓名、班级；文件读取后即删。
 - **数据位置**：`data/Kebiao/<平台>_<群号或用户号>.json`，可直接备份或删除。
 
+
+## 图片渲染模式（Debian 镜像）
+
+上游的图片模式依赖「渲染引擎扩展」，两个官方引擎在 Alpine(musl) 镜像上都装不了：
+
+| 引擎 | 阻塞原因 |
+|---|---|
+| Html2Pic | 依赖链 `html2pic → pictex → skia-python`，skia-python 最高只提供 **cp311** 的 wheel，本项目是 **Python 3.12** |
+| Playwright | 只发布 manylinux wheel，**没有 musllinux**，Alpine 装不上 |
+
+所以需要 **glibc 基础镜像**。本仓库提供 `Dockerfile.debian`：
+
+```bash
+docker build -f Dockerfile.debian -t unibot:debian .
+```
+
+它会：换成国内 apt/pypi 镜像源 → 安装 ffmpeg / tini / fonts-noto-cjk → `uv sync` →
+安装 Playwright + Chromium（`/ms-playwright`）→ 用 `uid=100,gid=65533` 的 worker 运行（与 Alpine 版一致，挂载数据不会权限错乱）。
+
+配套需要：
+- `Extensions/Playwright`、`Extensions/Default` 两个扩展包（扩展市场下载，已随镜像打包）
+- `Config.toml` 的 `[image]`：`mode = true`、`renderer = "playwright"`、`template = "Default"`
+- `Config/Extensions/Playwright.toml`：`browser_type = "chromium"`
+
+> 注意 `renderer` 填的是**渲染引擎名（小写 `playwright`）**，不是扩展 id。
+
 ### 新增依赖与配置
 
 `pyproject.toml` 相比上游新增：

@@ -1,0 +1,62 @@
+# Debian(glibc) 版镜像 —— 为了能安装 Playwright 渲染引擎
+# （Alpine/musl 上 playwright 没有 wheel；Html2Pic 依赖的 skia-python 也没有 cp312 wheel）
+FROM python:3.12-slim AS builder
+
+ENV UV_PYTHON_DOWNLOADS=never \
+    UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    UV_COMPILE_BYTECODE=0 \
+    UV_LINK_MODE=copy
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple uv
+
+COPY pyproject.toml ./
+RUN uv sync --no-dev --extra webui --extra extensions --no-editable --no-cache
+
+
+FROM python:3.12-slim
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
+
+# 换成国内镜像源（服务器访问 deb.debian.org 会超时）
+RUN sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g; s|http://security.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \
+        /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tini curl ffmpeg tzdata fonts-noto-cjk ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# uid/gid 与 Alpine 版镜像保持一致（100:65533），否则挂载出来的 Data 文件会权限不足
+RUN groupadd -g 65533 worker \
+    && useradd -u 100 -g 65533 -M -s /usr/sbin/nologin worker \
+    && mkdir -p /data && chown worker:worker /data
+
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple uv
+
+COPY --from=builder --chown=worker:worker /app/.venv /app/.venv
+COPY --chown=worker:worker . /app/
+
+# 运行期需要可写的目录（镜像里没有，运行时创建会因权限失败）
+RUN mkdir -p /app/Logs /app/Temp /app/WebUi /app/napcat/config/unibot-temp \
+    && chown -R worker:worker /app/Logs /app/Temp /app/WebUi /app/napcat
+
+# Playwright 客户端 + Chromium（图片渲染引擎依赖）
+RUN uv pip install --python /app/.venv/bin/python playwright \
+    && /app/.venv/bin/playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright
+
+WORKDIR /app
+
+USER worker
+
+VOLUME ["/data/"]
+EXPOSE 8000
+
+ENTRYPOINT ["/usr/bin/tini", "--", "sh", "/app/entrypoint.sh"]
+CMD ["python", "/app/Watchdog.py"]
