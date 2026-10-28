@@ -6,8 +6,9 @@
 - 用户名 -> UUID：``api.mojang.com``
 - 皮肤 / 披风贴图：``sessionserver.mojang.com`` 的 profile 接口
 
-渲染：纯 Pillow 从 64x64 皮肤贴图按固定 UV 切出各个面，拼成正面 / 背面，
-再贴上披风贴图。不依赖任何第三方渲染服务，也不需要浏览器或扩展渲染器。
+渲染：纯 Pillow + numpy 的三维渲染（见 ``SkinRender``）。按模型的长宽高把皮肤
+切成六个面，用透视相机投影后按深度排序绘制，第二层皮肤（帽子、外套、袖子）
+会外扩出真实的厚度，不再是两层平面贴在一起。不依赖任何第三方渲染服务。
 
 仅支持正版 Java 账号；离线服玩家不在 Mojang 记录里，会给出提示。
 """
@@ -28,6 +29,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .Config import plugin_config
 from .HelpEntry import register_help_commands
+from .SkinRender import render_character
 
 # Mojang 接口
 MOJANG_USER_URL = 'https://api.mojang.com/users/profiles/minecraft/{name}'
@@ -39,8 +41,10 @@ MOJANG_USER_AGENT = 'UniBot-Extend player card (https://github.com/DICEALPHAHU/U
 
 # 皮肤体积上限（正版皮肤固定 64x64，限制一下避免异常数据）
 SKIN_MAX_BYTES = 512 * 1024
-# 单张大图的渲染倍率：皮肤 16x32 -> 128x256
-RENDER_SCALE = 8
+# 卡片里人物立绘的高度（像素）
+CARD_SPRITE_HEIGHT = 250
+# 披风贴图的放大倍率：10x16 -> 80x128
+CAPE_SCALE = 8
 # 卡片缓存时长（秒）与条目上限
 CARD_CACHE_TTL = 600
 CARD_CACHE_MAX = 30
@@ -62,64 +66,6 @@ player_cmd = on_command('player', priority=0, block=True)
 
 class PlayerNotFound(Exception):
     """玩家不存在（非正版玩家或名字拼错）。"""
-
-
-# 64x64 皮肤贴图里各面的坐标：(left, top, right, bottom)
-# 键名：front/back 是正面与背面，ofront/oback 是对应的 overlay（第二层皮肤）
-CLASSIC_FACES = {
-    'head': {'front': (8, 8, 16, 16), 'back': (24, 8, 32, 16), 'ofront': (40, 8, 48, 16), 'oback': (56, 8, 64, 16)},
-    'body': {'front': (20, 20, 28, 32), 'back': (32, 20, 40, 32), 'ofront': (20, 36, 28, 48), 'oback': (32, 36, 40, 48)},
-    'right_arm': {
-        'front': (44, 20, 48, 32), 'back': (52, 20, 56, 32),
-        'ofront': (44, 36, 48, 48), 'oback': (52, 36, 56, 48),
-    },
-    'left_arm': {
-        'front': (36, 52, 40, 64), 'back': (44, 52, 48, 64),
-        'ofront': (52, 52, 56, 64), 'oback': (60, 52, 64, 64),
-    },
-    'right_leg': {
-        'front': (4, 20, 8, 32), 'back': (12, 20, 16, 32),
-        'ofront': (4, 36, 8, 48), 'oback': (12, 36, 16, 48),
-    },
-    'left_leg': {
-        'front': (20, 52, 24, 64), 'back': (28, 52, 32, 64),
-        'ofront': (4, 52, 8, 64), 'oback': (12, 52, 16, 64),
-    },
-}
-
-# Alex（slim）模型手臂只有 3 像素宽
-SLIM_ARM_WIDTH = 3
-
-# Alex（slim）模型手臂只有 3 像素宽，正面/背面的起始 x 与经典模型不同
-SLIM_FACES = {
-    **CLASSIC_FACES,
-    'right_arm': {
-        'front': (44, 20, 47, 32), 'back': (51, 20, 54, 32),
-        'ofront': (44, 36, 47, 48), 'oback': (51, 36, 54, 48),
-    },
-    'left_arm': {
-        'front': (36, 52, 39, 64), 'back': (43, 52, 46, 64),
-        'ofront': (52, 52, 55, 64), 'oback': (59, 52, 62, 64),
-    },
-}
-
-# 正面/背面各自的拼装顺序：(部件, 面, overlay 面, x, y)
-FRONT_LAYOUT = [
-    ('right_leg', 'front', 'ofront', 4, 20),
-    ('left_leg', 'front', 'ofront', 8, 20),
-    ('body', 'front', 'ofront', 4, 8),
-    ('right_arm', 'front', 'ofront', 0, 8),
-    ('left_arm', 'front', 'ofront', 12, 8),
-]
-BACK_LAYOUT = [
-    ('left_leg', 'back', 'oback', 4, 20),
-    ('right_leg', 'back', 'oback', 8, 20),
-    ('body', 'back', 'oback', 4, 8),
-    ('left_arm', 'back', 'oback', 12, 8),
-    ('right_arm', 'back', 'oback', 0, 8),
-]
-FRONT_HEAD = ('head', 'front', 'ofront', 4, 0)
-BACK_HEAD = ('head', 'back', 'oback', 4, 0)
 
 
 def _cache_get(key: str):
@@ -194,42 +140,21 @@ async def download_image(client: AsyncClient, url: str, max_bytes: int = SKIN_MA
         return None
 
 
-def _face_table(model: str) -> dict:
-    """按模型返回切面坐标表。"""
-    return SLIM_FACES if model == 'slim' else CLASSIC_FACES
-
-
 def render_view(skin: Image.Image, model: str, back: bool = False) -> Image.Image:
-    """把皮肤贴图渲染成 16x32 的正面或背面视图。"""
-    faces = _face_table(model)
-    # 1.8 之前的 64x32 老皮肤：没有 overlay 层，左右肢体共用右半边的贴图（镜像使用）。
-    # 这类皮肤未使用的区域常被填成不透明黑色，必须跳过 overlay，否则整个模型会被涂黑。
-    legacy = skin.height < 64
-    layout = (BACK_LAYOUT + [BACK_HEAD]) if back else (FRONT_LAYOUT + [FRONT_HEAD])
-    # slim 手臂只有 3 像素宽，贴身体的那一侧要收进来 1 像素，否则会跟躯干之间留出空隙
-    arm_offset = (4 - SLIM_ARM_WIDTH) if model == 'slim' else 0
-    canvas = Image.new('RGBA', (16, 32), (0, 0, 0, 0))
-    overlays = []
-    for part, face, overlay_face, x, y in layout:
-        if arm_offset and part.endswith('_arm') and x == 0:
-            x += arm_offset
-        source = part
-        if legacy and part.startswith('left_'):
-            source = 'right_' + part.split('_', 1)[1]
-        piece = skin.crop(faces[source][face])
-        if source != part:
-            piece = piece.transpose(Image.FLIP_LEFT_RIGHT)
-        canvas.alpha_composite(piece, (x, y))
-        if not legacy:
-            overlays.append((skin.crop(faces[part][overlay_face]), x, y))
-    for overlay, x, y in overlays:
-        canvas.alpha_composite(overlay, (x, y))
-    return canvas.resize((16 * RENDER_SCALE, 32 * RENDER_SCALE), Image.Resampling.NEAREST)
+    """渲染正面或背面的立体立绘，并缩放到卡片里需要的高度。"""
+    image = render_character(skin, model=model, back=back)
+    if image.height != CARD_SPRITE_HEIGHT:
+        scale = CARD_SPRITE_HEIGHT / image.height
+        image = image.resize(
+            (max(1, round(image.width * scale)), CARD_SPRITE_HEIGHT),
+            Image.Resampling.LANCZOS,
+        )
+    return image
 
 
 def render_cape(cape: Image.Image) -> Image.Image:
     """披风贴图正面在 (1,1)-(11,17)。"""
-    return cape.crop((1, 1, 11, 17)).resize((10 * RENDER_SCALE, 16 * RENDER_SCALE), Image.Resampling.NEAREST)
+    return cape.crop((1, 1, 11, 17)).resize((10 * CAPE_SCALE, 16 * CAPE_SCALE), Image.Resampling.NEAREST)
 
 
 def _font(path: Path | None, size: int):
@@ -297,18 +222,23 @@ def build_card(name: str, uuid: str, skin: Image.Image, cape: Image.Image | None
     subtitle = f'Minecraft 正版玩家 · {model}'
     draw.text((36, 74), subtitle, font=tag_font, fill=(150, 152, 156, 255))
 
-    for x, image, label in ((36, front, '皮肤正面'), (300, back, '皮肤背面')):
-        y = 120
-        draw.rounded_rectangle((x - 12, y - 12, x + image.width + 12, y + image.height + 32), radius=14,
-                               fill=(24, 25, 28, 255))
-        card.alpha_composite(image, (x, y))
-        draw.text((x, y + image.height + 8), label, font=small_font, fill=(150, 152, 156, 255))
+    # 立绘高度固定，两张竖版面板并排；披风单独一格
+    slot_x = 36
+    slot_gap = 40
+    slot_y = 112
+    for image, label in ((front, '皮肤正面'), (back, '皮肤背面')):
+        panel = (slot_x - 12, slot_y - 12, slot_x + image.width + 12, slot_y + image.height + 32)
+        draw.rounded_rectangle(panel, radius=14, fill=(24, 25, 28, 255))
+        card.alpha_composite(image, (slot_x, slot_y))
+        draw.text((slot_x, slot_y + image.height + 8), label, font=small_font, fill=(150, 152, 156, 255))
+        slot_x += image.width + slot_gap
 
     if cape is not None:
         cape_image = render_cape(cape)
         x = 564
-        draw.rounded_rectangle((x - 12, 108, x + cape_image.width + 12, 120 + cape_image.height + 32), radius=14,
-                               fill=(24, 25, 28, 255))
+        draw.rounded_rectangle(
+            (x - 12, 108, x + cape_image.width + 12, 120 + cape_image.height + 32), radius=14, fill=(24, 25, 28, 255)
+        )
         card.alpha_composite(cape_image, (x, 120))
         draw.text((x, 120 + cape_image.height + 8), '披风', font=small_font, fill=(150, 152, 156, 255))
     else:
@@ -373,9 +303,9 @@ async def handle_player(args: Message = CommandArg()):
 
 __plugin_meta__ = PluginMetadata(
     name='Minecraft 玩家卡',
-    description='查询正版 Java 玩家的皮肤与披风，渲染正面/背面卡片（数据来源：Mojang）',
+    description='查询正版 Java 玩家的皮肤与披风，渲染有厚度的正/背面卡片（数据来源：Mojang）',
     usage='.player <玩家名或 UUID>\n示例：.player Notch',
-    extra={'author': 'DICEALPHAHU', 'version': '1.0'},
+    extra={'author': 'vvvvdg', 'version': '1.1'},
 )
 
 register_help_commands([
