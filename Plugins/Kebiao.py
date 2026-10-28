@@ -843,12 +843,33 @@ async def handle_remind(event: MessageEvent, args: Message = CommandArg()):
 # ===== 收文件 =====
 
 
+def _normalize_url(url: str) -> str:
+    """补全下载地址的协议头。
+
+    NapCat 返回的文件地址有时是协议相对（//host/path）甚至完全不带协议头，
+    httpx 会直接抛 UnsupportedProtocol。
+    """
+    url = (url or '').strip()
+    if url.startswith('//'):
+        return 'https:' + url
+    if url and not url.startswith(('http://', 'https://')):
+        return 'https://' + url
+    return url
+
+
 async def _download(url: str) -> bytes | None:
-    async with AsyncClient(timeout=30, follow_redirects=True) as client:
-        response = await client.get(url)
-        if response.status_code != 200:
-            return None
-        content = response.content
+    url = _normalize_url(url)
+    if not url:
+        return None
+    try:
+        async with AsyncClient(timeout=30, follow_redirects=True) as client:
+            response = await client.get(url)
+            if response.status_code != 200:
+                return None
+            content = response.content
+    except Exception as error:
+        logger.warning(f'课表文件下载失败：{error}')
+        return None
     if not content or len(content) > FILE_MAX_BYTES:
         return None
     return content
