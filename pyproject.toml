@@ -82,7 +82,7 @@ plugins = [
     { module_name = "Plugins.Motou", enabled = true },
     { module_name = "Plugins.Poke", enabled = true },
     { module_name = "Plugins.Guessnum", enabled = true },
-    { module_name = "Plugins.Kebiao", enabled = true },
+    { module_name = "Plugins.Kebiao", enabled = false },
     { module_name = "Plugins.EventFilter", enabled = true },
 ]
 
