@@ -875,11 +875,19 @@ async def _download(url: str) -> bytes | None:
     return content
 
 
+SCHEDULE_SUFFIXES = ('.xls', '.xlsx', '.xlsm')
+
+
+def _is_schedule_name(name: str | None) -> bool:
+    """只有教务导出的 xls/xlsx/xlsm 才算课表文件，其它文件一概不理。"""
+    return Path(name or '').suffix.lower() in SCHEDULE_SUFFIXES
+
+
 async def _store_schedule(event: MessageEvent, bot: Bot, filename: str, content: bytes) -> str:
     """解析上传的课表并保存，返回给用户的回执文本。"""
     platform, user_id = _platform_of(event), _user_id_of(event)
     suffix = Path(filename or 'schedule.xls').suffix.lower()
-    if suffix not in ('.xls', '.xlsx', '.xlsm'):
+    if suffix not in SCHEDULE_SUFFIXES:
         return '只认 .xls / .xlsx 的课表文件喵～'
 
     tmp = DATA_DIR / f'_upload_{int(time.time() * 1000)}{suffix}'
@@ -916,8 +924,26 @@ async def _store_schedule(event: MessageEvent, bot: Bot, filename: str, content:
     )
 
 
-group_file_notice = on_notice(priority=0, block=True, rule=lambda event: isinstance(event, GroupUploadNoticeEvent))
-file_message = on_message(priority=0, block=True, rule=lambda event: any(segment.type == 'file' for segment in event.get_message()))
+def _group_has_schedule_file(event) -> bool:
+    """群里上传的群文件是不是课表"""
+    return isinstance(event, GroupUploadNoticeEvent) and _is_schedule_name(
+        getattr(event.file, 'name', '') or ''
+    )
+
+
+def _message_has_schedule_file(event) -> bool:
+    """消息里带的文件是不是课表"""
+    for segment in event.get_message():
+        if segment.type != 'file':
+            continue
+        name = segment.data.get('file') or segment.data.get('name') or ''
+        if _is_schedule_name(str(name)):
+            return True
+    return False
+
+
+group_file_notice = on_notice(priority=0, block=True, rule=_group_has_schedule_file)
+file_message = on_message(priority=0, block=True, rule=_message_has_schedule_file)
 
 
 @group_file_notice.handle()
