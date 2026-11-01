@@ -235,6 +235,32 @@ docker build -f Dockerfile.debian -t unibot:debian .
 
 > 注意 `renderer` 填的是**渲染引擎名（小写 `playwright`）**，不是扩展 id。
 
+### 挂载文件的权限（WebUI 保存配置报「权限拒绝」）
+
+容器内以 `uid=100, gid=65533` 运行。**用 `sudo`/root 在宿主机上创建或编辑过被挂载的配置文件，
+属主就会变成 `root`**，容器里的进程只能读不能写 —— 于是 WebUI 保存配置、切换插件、装扩展时都会报
+`Permission denied`。受影响的挂载点：
+
+| 宿主机路径 | 容器内路径 | WebUI 里对应 |
+|---|---|---|
+| `debian-src/Config.toml` | `/app/Config.toml` | 配置 → 机器人配置（含图片模式开关） |
+| `data/.env` | `/app/.env` | 配置 → 环境变量 |
+| `debian-src/pyproject.toml` | `/app/pyproject.toml` | 插件管理 / 适配器安装 |
+| `debian-src/Extensions` | `/app/Extensions` | 扩展市场安装与更新 |
+
+修复（宿主机上普通用户即可，借 root 容器改属主，不需要 sudo）：
+
+```bash
+docker run --rm -u 0 --entrypoint sh \
+  -v /srv/unibot/debian-src:/src -v /srv/unibot/data:/data \
+  unibot:debian -c '
+    chown 100:65533 /src/Config.toml /src/pyproject.toml /data/.env
+    chmod 664 /src/Config.toml /src/pyproject.toml /data/.env
+    chown -R 100:65533 /src/Extensions'
+```
+
+改完不需要重启容器，WebUI 立刻就能保存。**以后再用 root 改这几个文件要记得重新执行一次。**
+
 ### 新增依赖与配置
 
 `pyproject.toml` 相比上游新增：
