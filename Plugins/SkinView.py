@@ -27,14 +27,14 @@ RENDER_TIMEOUT = 20.0
 ANIMATIONS = ('idle', 'walk', 'run')
 
 POSES: dict[str, dict[str, list[float]]] = {
+    # 手臂是一整根刚性长方体，没有肘关节，所以只保留这类「整条手臂摆动」的姿势；
+    # 摸下巴/扶额/敬礼这类需要弯肘的动作做不出来，硬凑会穿模。
     'wave': {'rightArm': [0, 0, 3.9], 'head': [0, 0.15, 0.05]},
     'cheer': {'rightArm': [0, 0, 3.9], 'leftArm': [0, 0, -3.9]},
     'point': {'rightArm': [-1.5, 0, 0], 'head': [0, -0.2, 0]},
-    'think': {'rightArm': [-1.0, 0, 0.9], 'head': [0.15, 0, 0]},
-    'cross': {'rightArm': [-1.25, 0, 0.3], 'leftArm': [-1.25, 0, -0.3]},
     'shrug': {'rightArm': [0, 0, 1.2], 'leftArm': [0, 0, -1.2], 'head': [-0.1, 0, 0]},
-    'facepalm': {'rightArm': [-1.2, 0, 2.2], 'head': [0.25, 0, 0]},
-    'salute': {'rightArm': [-0.5, 0, 2.6], 'head': [-0.05, 0, 0]},
+    'stretch': {'rightArm': [0, 0, 3.6], 'leftArm': [0, 0, -3.6], 'head': [-0.15, 0, 0]},
+    'lean': {'body': [0, 0, 0.12], 'head': [0, 0.2, 0.08], 'rightArm': [0, 0, 0.5]},
     'sit': {
         'rightLeg': [-1.5, 0, 0],
         'leftLeg': [-1.5, 0, 0],
