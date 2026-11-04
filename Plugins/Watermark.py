@@ -72,7 +72,7 @@ def _average_luminance(image: Image.Image, box: tuple[int, int, int, int]) -> fl
         return 0.0
 
 
-def apply_watermark(image: Image.Image, *, opacity: int = 130) -> Image.Image:
+def apply_watermark(image: Image.Image, *, opacity: int = 130, size: int | None = None) -> Image.Image:
     """在右下角叠加水印，返回新图（不修改传入的对象）。
 
     字号按图片高度自适应（12~26px）；文字颜色按水印区域的背景亮度自动切
@@ -83,8 +83,9 @@ def apply_watermark(image: Image.Image, *, opacity: int = 130) -> Image.Image:
     if width < 40 or height < 30:
         return base
 
-    size = max(12, min(26, round(height * 0.030)))
-    font = _load_font(size)
+    # size 传了就用传的；否则按图片高度自适应（12~26px）
+    font_size = size if size else max(12, min(26, round(height * 0.030)))
+    font = _load_font(font_size)
 
     overlay = Image.new('RGBA', base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
@@ -93,7 +94,7 @@ def apply_watermark(image: Image.Image, *, opacity: int = 130) -> Image.Image:
         text_width, text_height = right - left, bottom - top
     except Exception:
         # 极老的 Pillow 没有 textbbox，退化用粗略估算
-        text_width, text_height = size * len(WATERMARK_TEXT) // 2, size
+        text_width, text_height = font_size * len(WATERMARK_TEXT) // 2, font_size
 
     margin = max(8, round(min(width, height) * 0.025))
     x = max(0, width - text_width - margin)

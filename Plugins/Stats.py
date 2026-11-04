@@ -735,10 +735,12 @@ async def render_character_image(skin: tuple[Image.Image, str] | None) -> Image.
 
 def build_card(stats: PlayerStats, character: Image.Image | None = None) -> bytes:
     """画一张统计卡片，返回 PNG 字节；character 是已经渲染好的皮肤立绘。"""
+    # Plan 没记录时用「未记录」比破折号更直白
+    plan_missing_text = '未记录' if stats.playtime_ms is None else ''
     rows = [
-        ('在线时长', format_duration(stats.playtime_ms)),
-        ('活跃时长', format_duration(stats.active_ms)),
-        ('挂机时长', format_duration(stats.afk_ms)),
+        ('在线时长', plan_missing_text or format_duration(stats.playtime_ms)),
+        ('活跃时长', plan_missing_text or format_duration(stats.active_ms)),
+        ('挂机时长', plan_missing_text or format_duration(stats.afk_ms)),
         ('挖掘方块', format_count(stats.mined)),
         ('约计放置', format_count(stats.placed)),
         ('合成物品', format_count(stats.crafted)),
@@ -811,8 +813,10 @@ def build_card(stats: PlayerStats, character: Image.Image | None = None) -> byte
     )
     draw.text((tag_x, 38), tag, font=tag_font, fill=(210, 212, 216, 255))
 
-    state = '在线' if stats.online else ('离线' if stats.online is False else '状态未知')
-    draw.text((PADDING, 76), f'Minecraft 玩家统计 · {state}', font=tag_font, fill=(150, 152, 156, 255))
+    subtitle = 'Minecraft 玩家统计'
+    if stats.online is not None:
+        subtitle += ' · 在线' if stats.online else ' · 离线'
+    draw.text((PADDING, 76), subtitle, font=tag_font, fill=(150, 152, 156, 255))
     draw.line((PADDING, 110, width - PADDING, 110), fill=(54, 56, 62, 255), width=1)
 
     rows_x = PADDING + char_column
@@ -873,7 +877,7 @@ def build_card(stats: PlayerStats, character: Image.Image | None = None) -> byte
         )
 
     buffer = io.BytesIO()
-    apply_watermark(card).save(buffer, format='PNG')
+    apply_watermark(card, size=14, opacity=110).save(buffer, format='PNG')
     return buffer.getvalue()
 
 
