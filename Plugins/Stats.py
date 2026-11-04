@@ -49,6 +49,8 @@ DEFAULT_CONFIG = '''# 玩家统计卡配置
 plan_api = "http://127.0.0.1:8804"
 # Plan 里没有多服时留空；有代理结构时填服务器 UUID 或名字
 plan_server = ""
+# Plan 开始统计的日期，会显示在卡片底部（在线/活跃/挂机只从这个日期之后算）
+plan_since = ""
 
 # 每个服的统计目录（容器内路径）与 usercache.json（名字 -> UUID）
 [servers."生存服"]
@@ -105,6 +107,7 @@ class Settings:
 
     plan_api: str = ''
     plan_server: str = ''
+    plan_since: str = ''
     servers: dict[str, Profile] = field(default_factory=dict)
 
 
@@ -167,6 +170,7 @@ def load_settings() -> Settings:
     return Settings(
         plan_api=str(data.get('plan_api') or '').strip().rstrip('/'),
         plan_server=str(data.get('plan_server') or '').strip(),
+        plan_since=str(data.get('plan_since') or '').strip(),
         servers=servers,
     )
 
@@ -570,11 +574,15 @@ def build_card(stats: PlayerStats, skin: tuple[Image.Image, str] | None = None) 
             Image.Resampling.LANCZOS,
         )
 
+    since = _settings.plan_since
+    note = f'在线 / 活跃 / 挂机 自 {since} 起统计' if since else ''
+    note_height = 30 if note else 0
+
     width = CARD_WIDTH
     header_height = 128
     rows_height = ROW_HEIGHT * len(rows)
     body_height = max(rows_height, (character.height + 8) if character else 0)
-    height = header_height + body_height + PADDING - 4
+    height = header_height + body_height + PADDING - 4 + note_height
 
     card = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(card)
@@ -618,6 +626,15 @@ def build_card(stats: PlayerStats, skin: tuple[Image.Image, str] | None = None) 
         value_width = draw.textlength(value, font=value_font)
         draw.text(
             (rows_x + rows_width - value_width, y), value, font=value_font, fill=(238, 240, 244, 255)
+        )
+
+    if note:
+        small_font = _font(15)
+        draw.text(
+            (PADDING, height - PADDING + 2),
+            note,
+            font=small_font,
+            fill=(110, 112, 118, 255),
         )
 
     buffer = io.BytesIO()

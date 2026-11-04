@@ -268,8 +268,8 @@
 -v /srv/mc/purpur/usercache.json:/mcstats/survival/usercache.json:ro
 ```
 
-`Data/MCStats.toml` 里配 `plan_api`、每个服的 `stats` / `usercache` / `skins_players` / `skins_library`，
-加服照抄一段即可；改完发 `/统计重载`。
+`Data/MCStats.toml` 里配 `plan_api`、`plan_since`（Plan 开始统计的日期，会显示在卡片底部）、
+每个服的 `stats` / `usercache` / `skins_players` / `skins_library`，加服照抄一段即可；改完发 `/统计重载`。
 
 ### 13. 图片水印
 
