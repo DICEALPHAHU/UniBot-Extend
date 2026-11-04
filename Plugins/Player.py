@@ -30,6 +30,7 @@ from PIL import Image, ImageDraw, ImageFont
 from .Config import plugin_config
 from .HelpEntry import register_help_commands
 from .SkinRender import render_character
+from .Watermark import apply_watermark
 
 # Mojang 接口
 MOJANG_USER_URL = 'https://api.mojang.com/users/profiles/minecraft/{name}'
@@ -245,6 +246,9 @@ def build_card(name: str, uuid: str, skin: Image.Image, cape: Image.Image | None
         draw.text((564, 150), '无披风', font=tag_font, fill=(120, 122, 126, 255))
 
     draw.text((36, height - 44), f'UUID: {uuid}', font=small_font, fill=(120, 122, 126, 255))
+
+    # 右下角署名，与 HTML 模板（Base.html）里的水印保持一致
+    card = apply_watermark(card)
 
     buffer = io.BytesIO()
     card.save(buffer, format='PNG')

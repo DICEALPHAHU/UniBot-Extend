@@ -42,6 +42,7 @@ from nonebot.plugin import PluginMetadata
 
 from . import BiliCredential
 from .Config import plugin_config
+from .Watermark import stamp_file
 
 from Scripts.Config import config
 from .HelpEntry import register_help_commands
@@ -1049,6 +1050,9 @@ async def generate_video_frame(video_path: Path, frame_path: Path) -> Path | Non
             timeout=30.0,
         )
         if code == 0 and frame_path.exists() and frame_path.stat().st_size > 0:
+            # 右下角署名（失败不影响发图，继续用原图）
+            if not stamp_file(frame_path):
+                logger.debug('视频快照添加水印失败，使用原图')
             logger.info(f'视频快照生成成功：{frame_path}')
             return frame_path
         logger.debug(f'ffmpeg 抽帧未成功（-ss {position:.3f}，返回码 {code}）：{output[-200:]}')

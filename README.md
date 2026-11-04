@@ -234,6 +234,20 @@
 - **只认 QQ 进群事件**：监听 OneBot V11 的 `GroupIncreaseNoticeEvent`，和 MC 玩家进服（`Scripts.Plugins.Events`）互不影响；机器人自己被拉进群时不发。
 - **调试**：管理员在群里发 `/欢迎测试` 立即预览效果，`/欢迎重载` 重读配置。
 
+### 13. 图片水印
+
+机器人产出的每张图右下角都带 `Powered by DICEALPHAHU Unibot`：
+
+| 图片来源 | 实现方式 |
+|---|---|
+| HTML 模板渲染的指令（`/help`、`/list`、`/server`、`/luck`、`/bound`、`/bot about`） | `Extensions/Default/Templates/Base.html` 的 `.watermark`，所有模板都 `{% extends "Base.html" %}` |
+| `/player` 玩家卡 | [`Plugins/Watermark.py`](Plugins/Watermark.py) 的 `apply_watermark()` |
+| B站视频快照 | 同一模块的 `stamp_file()`，抽帧后原地叠加 |
+| `/课表` 图片 | Kebiao 自带的 `_watermark`（该插件当前关闭） |
+
+水印字号按图片高度自适应（12~26px），并会按水印区域的平均亮度自动切黑字/白字 + 反色投影，
+深色玩家卡和浅色视频画面都看得清；加水印失败只记 debug 日志，不影响图片正常发送。
+
 
 ## 图片渲染模式（Debian 镜像）
 
