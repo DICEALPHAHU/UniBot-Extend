@@ -622,13 +622,12 @@ def _prepare_character(png: bytes) -> Image.Image | None:
 async def render_character_image(skin: tuple[Image.Image, str] | None) -> Image.Image | None:
     """渲染卡片上的立绘：优先 skinview3d，失败再退回内置的软件渲染。"""
     image, model = skin if skin is not None else (fallback_skin(), 'classic')
-    yaw = random.uniform(-0.35, 0.55)
+    pose = random.choice(SkinView.POSE_NAMES)
+    yaw = SkinView.random_yaw(pose)
     buffer = io.BytesIO()
     try:
         image.save(buffer, format='PNG')
-        raw = await SkinView.render(
-            buffer.getvalue(), model, random.choice(SkinView.POSE_NAMES), yaw
-        )
+        raw = await SkinView.render(buffer.getvalue(), model, pose, yaw)
         if raw:
             prepared = _prepare_character(raw)
             if prepared is not None:

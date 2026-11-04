@@ -35,6 +35,10 @@ POSES: dict[str, dict[str, list[float]]] = {
     'shrug': {'rightArm': [0, 0, 1.2], 'leftArm': [0, 0, -1.2], 'head': [-0.1, 0, 0]},
     'stretch': {'rightArm': [0, 0, 3.6], 'leftArm': [0, 0, -3.6], 'head': [-0.15, 0, 0]},
     'lean': {'body': [0, 0, 0.12], 'head': [0, 0.2, 0.08], 'rightArm': [0, 0, 0.5]},
+    # 蹲下：像 MC 的潜行那样把上身整体下沉、身体前倾（腿保持直立）
+    'sneak': {'_sink': -1.6, 'body': [0.32, 0, 0], 'head': [-0.16, 0, 0]},
+    'crouch': {'_sink': -2.8, 'body': [0.48, 0, 0], 'head': [-0.26, 0, 0]},
+    'crouch_lite': {'_sink': -2.2, 'body': [0.38, 0, 0], 'head': [-0.2, 0, 0], 'rightArm': [-0.2, 0, 0], 'leftArm': [-0.2, 0, 0]},
     'sit': {
         'rightLeg': [-1.5, 0, 0],
         'leftLeg': [-1.5, 0, 0],
@@ -45,6 +49,18 @@ POSES: dict[str, dict[str, list[float]]] = {
 
 # 所有可选项：动画 + 静态姿势
 POSE_NAMES = tuple(ANIMATIONS) + tuple(POSES)
+
+# 蹲/坐这类动作在正面视角看不清腿的弯折，用 45° 以上的侧面视角
+SIDE_VIEW_POSES = frozenset({'sneak', 'crouch', 'crouch_lite', 'sit'})
+
+
+def random_yaw(pose: str) -> float:
+    """按姿势挑一个合适的观察角度。"""
+    import random as _random
+
+    if pose in SIDE_VIEW_POSES:
+        return _random.uniform(0.55, 0.85)
+    return _random.uniform(-0.35, 0.55)
 # 定格时刻（毫秒）：动画要跑一会儿才自然，静态姿势几十毫秒就够
 FRAME_DELAY = {'default': (250, 900), 'pose': (150, 260)}
 
