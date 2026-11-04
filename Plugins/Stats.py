@@ -16,6 +16,7 @@ Minecraft 玩家统计卡。
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import io
@@ -61,6 +62,8 @@ usercache = "/mcstats/survival/usercache.json"
 # SkinsRestorer 的皮肤库，用来给卡片渲染 3D 小人
 skins_players = "/mcskins/players"
 skins_library = "/mcskins/skins"
+# 成就进度：世界里的 advancements 目录
+advancements = "/mcstats/survival/advancements"
 
 # 想加更多服就照抄一段，路径按实际挂载改：
 # [servers."机械动力服"]
@@ -149,6 +152,7 @@ class Profile:
     usercache: Path | None = None
     skins_players: Path | None = None
     skins_library: Path | None = None
+    advancements: Path | None = None
 
 
 @dataclass(slots=True)
@@ -185,6 +189,9 @@ class PlayerStats:
     fish_caught: int | None = None
     sleep_in_bed: int | None = None
     animals_bred: int | None = None
+    # 成就
+    advancements_done: int | None = None
+    advancements_total: int | None = None
     # 趣味：最爱挖的方块 / 最常杀的生物 / 最常死在谁手里
     favorite_block: tuple[str, int] | None = None
     favorite_mob: tuple[str, int] | None = None
@@ -222,12 +229,14 @@ def load_settings() -> Settings:
         usercache = str(item.get('usercache') or '').strip()
         skins_players = str(item.get('skins_players') or '').strip()
         skins_library = str(item.get('skins_library') or '').strip()
+        advancements = str(item.get('advancements') or '').strip()
         servers[str(name)] = Profile(
             name=str(name),
             stats_dir=Path(stats_dir) if stats_dir else None,
             usercache=Path(usercache) if usercache else None,
             skins_players=Path(skins_players) if skins_players else None,
             skins_library=Path(skins_library) if skins_library else None,
+            advancements=Path(advancements) if advancements else None,
         )
     return Settings(
         plan_api=str(data.get('plan_api') or '').strip().rstrip('/'),
@@ -390,6 +399,10 @@ def collect_stats(profile: Profile, player: str) -> PlayerStats:
     stats.sleep_in_bed = custom.get('minecraft:sleep_in_bed')
     stats.animals_bred = custom.get('minecraft:animals_bred')
     stats.broken = sum((data.get('minecraft:broken') or {}).values()) or None
+    known = _advancement_ids(profile)
+    if known:
+        stats.advancements_total = len(known)
+        stats.advancements_done = _player_advancements(profile, uuid, known)
     stats.favorite_block = _top_entry(data.get(SECTION_MINED))
     stats.favorite_mob = _top_entry(data.get('minecraft:killed'))
     stats.worst_killer = _top_entry(data.get('minecraft:killed_by'))
@@ -406,7 +419,69 @@ def has_any_data(stats: PlayerStats) -> bool:
             stats.crafted,
             stats.deaths,
             stats.mob_kills,
+            stats.advancements_done,
         )
+    )
+
+
+# ===== 成就 =====
+
+ADVANCE_CACHE_SECONDS = 12 * 3600
+ADVANCE_SNAPSHOT = Path('Data/MCStats/advancements.json')
+_advance_cache: dict[Path | None, tuple[float, set[str]]] = {}
+
+
+def _advancement_ids(profile: Profile) -> set[str]:
+    """全体玩家成就 id 的并集（不含配方），当作「总成就数」。
+
+    直接用服务器 jar 里的成就表最准，但 Purpur 的 jar 是 patch 包，取不到；
+    拿几百个玩家的记录求并集，实际就是完整的原版成就集。结果会落盘一份做兜底。
+    """
+    now = time.time()
+    key = profile.advancements
+    cached = _advance_cache.get(key)
+    if cached and now - cached[0] < ADVANCE_CACHE_SECONDS:
+        return cached[1]
+
+    ids: set[str] = set()
+    if key and key.is_dir():
+        for path in key.glob('*.json'):
+            try:
+                data = json.loads(path.read_text('Utf-8'))
+            except (OSError, json.JSONDecodeError):
+                continue
+            ids.update(name for name in data if name != 'DataVersion' and 'recipes' not in name)
+        if ids:
+            try:
+                ADVANCE_SNAPSHOT.parent.mkdir(parents=True, exist_ok=True)
+                ADVANCE_SNAPSHOT.write_text(
+                    json.dumps(sorted(ids), ensure_ascii=False, indent=1), 'Utf-8'
+                )
+            except OSError:
+                pass
+
+    if not ids and ADVANCE_SNAPSHOT.exists():
+        try:
+            ids = set(json.loads(ADVANCE_SNAPSHOT.read_text('Utf-8')))
+        except (OSError, json.JSONDecodeError):
+            ids = set()
+
+    _advance_cache[key] = (now, ids)
+    return ids
+
+
+def _player_advancements(profile: Profile, uuid: str, known: set[str]) -> int | None:
+    """玩家已完成的成就数；没有记录返回 None。"""
+    if not uuid or not profile.advancements:
+        return None
+    try:
+        data = json.loads((profile.advancements / f'{uuid}.json').read_text('Utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return sum(
+        1
+        for name, value in data.items()
+        if name in known and isinstance(value, dict) and value.get('done')
     )
 
 
@@ -544,6 +619,27 @@ async def _mojang_skin(name: str) -> tuple[str, str] | None:
 
     result = None
     definitive = False  # 只有「查无此人」才缓存失败，网络错误要允许下次重试
+    # Mojang 偶尔抽风（超时 / 5xx），重试一次再放弃，避免莫名其妙退回自定义皮肤
+    for attempt in range(2):
+        try:
+            result, definitive = await _query_mojang(name)
+        except Exception as error:
+            logger.debug(f'玩家统计：查询正版皮肤失败（{attempt + 1}/2，{error}）')
+            result = None
+        if result is not None or definitive:
+            break
+        if attempt == 0:
+            await asyncio.sleep(0.6)
+    if result is None and not definitive:
+        return None
+    if result is not None or definitive:
+        _mojang_cache[key] = (now, result)
+    return result
+
+
+async def _query_mojang(name: str):
+    """真正发请求的部分，返回 (皮肤信息, 是否确认为「查无此人」)。"""
+    definitive = False
     try:
         async with AsyncClient(timeout=SKIN_TIMEOUT) as client:
             response = await client.get(MOJANG_PROFILE_URL.format(name=name))
@@ -560,15 +656,12 @@ async def _mojang_skin(name: str) -> tuple[str, str] | None:
                             textures = json.loads(base64.b64decode(prop['value']))
                             skin = textures['textures']['SKIN']
                             model = str((skin.get('metadata') or {}).get('model') or 'classic').lower()
-                            result = (skin['url'], model)
-                            break
+                            return (skin['url'], model), False
                     else:
                         definitive = True
     except Exception as error:
         logger.debug(f'玩家统计：查询正版皮肤失败（{error}）')
-    if result is not None or definitive:
-        _mojang_cache[key] = (now, result)
-    return result
+    return None, definitive
 SKIN_DISK_DIR = Path('Data/SkinCache')
 SKIN_TIMEOUT = 6.0
 _skin_cache: dict[str, tuple[float, Image.Image | None, str]] = {}
@@ -791,8 +884,9 @@ def build_card(stats: PlayerStats, character: Image.Image | None = None) -> byte
     detail_top = header_height + body_height + 6
     detail_row_height = 34
     detail_height = detail_row_height * len(detail_pairs)
+    advance_height = 46 if stats.advancements_total else 0
     series_height = 30 + 30 * len(fun_rows) if (trivia or fun_rows) else 0
-    height = detail_top + detail_height + series_height + PADDING + note_height + 4
+    height = detail_top + detail_height + advance_height + series_height + PADDING + note_height + 4
 
     card = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(card)
@@ -857,7 +951,35 @@ def build_card(stats: PlayerStats, character: Image.Image | None = None) -> byte
             label_width = draw.textlength(label, font=detail_font)
             draw.text((x + label_width + 10, y), value, font=detail_font, fill=(220, 222, 228, 255))
 
-    series_y = detail_top + detail_height + 2
+    # ===== 成就进度 =====
+    if stats.advancements_total:
+        done = stats.advancements_done or 0
+        total = stats.advancements_total
+        ratio = min(1.0, done / total) if total else 0
+        bar_y = detail_top + detail_height + 8
+        bar_font = _font(18)
+        draw.text((PADDING, bar_y), '成就进度', font=bar_font, fill=(140, 142, 148, 255))
+        value = f'{done} / {total}（{round(ratio * 100)}%）'
+        value_width = draw.textlength(value, font=bar_font)
+        draw.text(
+            (width - PADDING - value_width, bar_y), value, font=bar_font, fill=(220, 222, 228, 255)
+        )
+        track_y = bar_y + 28
+        track_h = 8
+        draw.rounded_rectangle(
+            (PADDING, track_y, width - PADDING, track_y + track_h),
+            radius=track_h // 2,
+            fill=(48, 50, 56, 255),
+        )
+        fill_width = int((width - PADDING * 2) * ratio)
+        if fill_width > track_h:
+            draw.rounded_rectangle(
+                (PADDING, track_y, PADDING + fill_width, track_y + track_h),
+                radius=track_h // 2,
+                fill=(96, 186, 132, 255),
+            )
+
+    series_y = detail_top + detail_height + advance_height + 2
     series_font = _font(17)
     if trivia:
         draw.text((PADDING, series_y), trivia, font=series_font, fill=(140, 142, 148, 255))
@@ -896,6 +1018,9 @@ def build_text(stats: PlayerStats) -> str:
         f'总里程：{format_distance(stats.distance_cm)} · 跳跃：{format_count(stats.jumps)}',
         f'造成伤害：{format_count(stats.damage_dealt)} · 工具损坏：{format_count(stats.broken)}',
     ]
+    if stats.advancements_total:
+        done = stats.advancements_done or 0
+        lines.append(f'成就进度：{done} / {stats.advancements_total}')
     trivia = ' · '.join(
         item
         for item in (

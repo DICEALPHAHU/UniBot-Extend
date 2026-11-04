@@ -252,6 +252,7 @@
 | 总里程 / 跳跃 / 造成伤害 / 工具损坏 | `custom` 里各项求和 | 精确 |
 | 钓鱼 / 睡觉 / 繁殖 | `custom.fish_caught` / `sleep_in_bed` / `animals_bred` | 精确 |
 | 最爱挖的方块 / 最常杀的生物 / 最常死因 | `mined` / `killed` / `killed_by` 取最大值 | 每次随机展示其中两条 |
+| 成就进度 | `players/advancements/<uuid>.json` 里 `done` 的条目 | 总数取全体玩家成就 id 的并集（不含配方），带进度条 |
 
 > 没开图片模式（`Config.toml` 的 `[image] mode = false`）时，`/stats` 直接发纯文字，不做任何渲染。
 
