@@ -86,6 +86,8 @@ plugins = [
     { module_name = "Plugins.KeywordReply", enabled = true },
     # 入群欢迎（Plugins/Welcome.py）：文案在 Data/Welcome.toml
     { module_name = "Plugins.Welcome", enabled = true },
+    # 玩家统计卡（Plugins/Stats.py）：配置在 Data/MCStats.toml
+    { module_name = "Plugins.Stats", enabled = true },
     { module_name = "Plugins.Kebiao", enabled = false },
     { module_name = "Plugins.EventFilter", enabled = true },
 ]
