@@ -250,7 +250,11 @@
 | 合成物品 | `stats/crafted` 求和 | 全历史精确 |
 | 击杀生物 / 死亡次数 | `custom.mob_kills` / `custom.deaths` | 精确 |
 
-**卡片**：左侧是按玩家皮肤渲染的 3D 小人，每次随机一种姿势和朝向：
+**卡片**：左侧是按玩家皮肤渲染的 3D 小人，用 **[skinview3d](https://github.com/bs-community/skinview3d)**（皮肤站常用的 WebGL 库）
+配容器里已有的 Chromium 渲染 —— 复用图片模式那套 Playwright，加载本地 `viewer.html`、套上 idle/walk/run 动画、
+随机时刻定格截图。之前的 `SkinRender.py`（Pillow+numpy 手写软件光栅化）只作为回退。
+
+原话保留：左侧是按玩家皮肤渲染的 3D 小人，每次随机一种姿势和朝向：
 
 | 姿势 | 说明 |
 |---|---|

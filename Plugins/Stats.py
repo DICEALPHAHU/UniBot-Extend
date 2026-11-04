@@ -37,6 +37,7 @@ from PIL import Image, ImageDraw, ImageFont
 from Scripts import Globals
 from Scripts.Logging import logger
 from .HelpEntry import register_help_commands
+from . import SkinView
 from .SkinRender import FACE_RECTS, POSES, render_character
 from .Watermark import apply_watermark
 
@@ -452,9 +453,12 @@ async def _mojang_skin(name: str) -> tuple[str, str] | None:
             return cached[1]
 
     result = None
+    definitive = False  # 只有「查无此人」才缓存失败，网络错误要允许下次重试
     try:
         async with AsyncClient(timeout=SKIN_TIMEOUT) as client:
             response = await client.get(MOJANG_PROFILE_URL.format(name=name))
+            if response.status_code in (204, 404):
+                definitive = True
             if response.status_code == 200:
                 uuid = (response.json() or {}).get('id')
                 if uuid:
@@ -468,9 +472,12 @@ async def _mojang_skin(name: str) -> tuple[str, str] | None:
                             model = str((skin.get('metadata') or {}).get('model') or 'classic').lower()
                             result = (skin['url'], model)
                             break
+                    else:
+                        definitive = True
     except Exception as error:
         logger.debug(f'玩家统计：查询正版皮肤失败（{error}）')
-    _mojang_cache[key] = (now, result)
+    if result is not None or definitive:
+        _mojang_cache[key] = (now, result)
     return result
 SKIN_DISK_DIR = Path('Data/SkinCache')
 SKIN_TIMEOUT = 6.0
@@ -589,8 +596,60 @@ def fallback_skin() -> Image.Image:
     return skin
 
 
-def build_card(stats: PlayerStats, skin: tuple[Image.Image, str] | None = None) -> bytes:
-    """画一张统计卡片，返回 PNG 字节。"""
+CHARACTER_HEIGHT = 300
+
+
+def _prepare_character(png: bytes) -> Image.Image | None:
+    """裁掉透明边并缩放到卡片列高。"""
+    try:
+        with Image.open(io.BytesIO(png)) as image:
+            image = image.convert('RGBA')
+            box = image.getbbox()
+            if box:
+                image = image.crop(box)
+            if image.height > CHARACTER_HEIGHT:
+                ratio = CHARACTER_HEIGHT / image.height
+                image = image.resize(
+                    (max(1, int(image.width * ratio)), CHARACTER_HEIGHT), Image.Resampling.LANCZOS
+                )
+            return image
+    except Exception as error:
+        logger.debug(f'玩家统计：立绘后处理失败（{error}）')
+        return None
+
+
+async def render_character_image(skin: tuple[Image.Image, str] | None) -> Image.Image | None:
+    """渲染卡片上的立绘：优先 skinview3d，失败再退回内置的软件渲染。"""
+    image, model = skin if skin is not None else (fallback_skin(), 'classic')
+    yaw = random.uniform(-0.35, 0.55)
+    buffer = io.BytesIO()
+    try:
+        image.save(buffer, format='PNG')
+        raw = await SkinView.render(
+            buffer.getvalue(),
+            model,
+            random.choice(SkinView.ANIMATIONS),
+            yaw,
+            random.randint(*SkinView.FRAME_DELAY),
+        )
+        if raw:
+            prepared = _prepare_character(raw)
+            if prepared is not None:
+                return prepared
+    except Exception as error:
+        logger.debug(f'玩家统计：skinview3d 渲染异常（{error}）')
+
+    try:
+        return render_character(
+            image, model=model, ppu=8, yaw=yaw, pose=POSES[random.choice(list(POSES))]
+        )
+    except Exception as error:
+        logger.debug(f'玩家统计：备用渲染失败（{error}）')
+        return None
+
+
+def build_card(stats: PlayerStats, character: Image.Image | None = None) -> bytes:
+    """画一张统计卡片，返回 PNG 字节；character 是已经渲染好的皮肤立绘。"""
     rows = [
         ('在线时长', format_duration(stats.playtime_ms)),
         ('活跃时长', format_duration(stats.active_ms)),
@@ -601,16 +660,6 @@ def build_card(stats: PlayerStats, skin: tuple[Image.Image, str] | None = None) 
         ('击杀生物', format_count(stats.mob_kills)),
         ('死亡次数', format_count(stats.deaths)),
     ]
-
-    # 随机姿势 + 随机朝向，每次查询都有点新鲜感
-    character = None
-    image, model = skin if skin is not None else (fallback_skin(), 'classic')
-    pose = POSES[random.choice(list(POSES))]
-    yaw = random.uniform(-0.35, 0.55)
-    try:
-        character = render_character(image, model=model, ppu=8, yaw=yaw, pose=pose)
-    except Exception as error:
-        logger.debug(f'玩家统计：3D 渲染失败（{error}）')
 
     char_column = 220 if character is not None else 0
     # 张开手臂的姿势会比站立宽很多，超宽就等比缩回列宽内
@@ -763,7 +812,8 @@ async def handle_stats(event: MessageEvent, args: Message = CommandArg()):
     skin = await fetch_skin(profile, stats.uuid, stats.name)
     card = None
     try:
-        card = build_card(stats, skin)
+        character = await render_character_image(skin)
+        card = build_card(stats, character)
     except Exception as error:
         # finish() 会抛控制流异常，绝不能放在 try 里
         logger.warning(f'玩家统计：卡片渲染失败（{error}），改发文字。')
