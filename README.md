@@ -250,6 +250,8 @@
 | 合成物品 | `stats/crafted` 求和 | 全历史精确 |
 | 击杀生物 / 死亡次数 | `custom.mob_kills` / `custom.deaths` | 精确 |
 
+> 没开图片模式（`Config.toml` 的 `[image] mode = false`）时，`/stats` 直接发纯文字，不做任何渲染。
+
 **卡片**：左侧是按玩家皮肤渲染的 3D 小人，用 **[skinview3d](https://github.com/bs-community/skinview3d)**（皮肤站常用的 WebGL 库）
 配容器里已有的 Chromium 渲染 —— 复用图片模式那套 Playwright，加载本地 `viewer.html`、套上 idle/walk/run 动画、
 随机时刻定格截图。之前的 `SkinRender.py`（Pillow+numpy 手写软件光栅化）只作为回退。
@@ -303,7 +305,7 @@
 | 图片来源 | 实现方式 |
 |---|---|
 | HTML 模板渲染的指令（`/help`、`/list`、`/server`、`/luck`、`/bound`、`/bot about`） | `Extensions/Default/Templates/Base.html` 的 `.watermark`，所有模板都 `{% extends "Base.html" %}` |
-| `/player` 玩家卡 | [`Plugins/Watermark.py`](Plugins/Watermark.py) 的 `apply_watermark()` |
+| `/player` 玩家卡 | [`Plugins/Watermark.py`](Plugins/Watermark.py) 的 `apply_watermark()`（正/背视图由 skinview3d 渲染） |
 | B站视频快照 | 同一模块的 `stamp_file()`，抽帧后原地叠加 |
 | `/stats` 玩家统计卡 | `apply_watermark()`（Pillow 画的卡片） |
 | `/课表` 图片 | Kebiao 自带的 `_watermark`（该插件当前关闭） |

@@ -35,6 +35,7 @@ from nonebot.plugin import PluginMetadata
 from PIL import Image, ImageDraw, ImageFont
 
 from Scripts import Globals
+from Scripts.Config import config
 from Scripts.Logging import logger
 from .HelpEntry import register_help_commands
 from . import SkinView
@@ -809,6 +810,10 @@ async def handle_stats(event: MessageEvent, args: Message = CommandArg()):
             f'在「{profile.name}」里没有找到玩家 {target} 的记录。\n'
             f'可能是名字拼错，或者他从没在这个服玩过。（可查询的服：{"、".join(names)}）'
         )
+    # 没开图片模式就直接发文字，省得为一个字段渲染整张图
+    if not getattr(config.image, 'mode', True):
+        await stats_cmd.finish(Message(MessageSegment.text(build_text(stats))))
+
     skin = await fetch_skin(profile, stats.uuid, stats.name)
     card = None
     try:

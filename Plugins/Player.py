@@ -16,6 +16,7 @@
 import asyncio
 import base64
 import io
+import math
 import json
 import time
 from pathlib import Path
@@ -29,6 +30,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .Config import plugin_config
 from .HelpEntry import register_help_commands
+from . import SkinView
 from .SkinRender import render_character
 from .Watermark import apply_watermark
 
@@ -141,9 +143,11 @@ async def download_image(client: AsyncClient, url: str, max_bytes: int = SKIN_MA
         return None
 
 
-def render_view(skin: Image.Image, model: str, back: bool = False) -> Image.Image:
-    """渲染正面或背面的立体立绘，并缩放到卡片里需要的高度。"""
-    image = render_character(skin, model=model, back=back)
+def _fit_sprite(image: Image.Image) -> Image.Image:
+    """裁掉透明边并缩放到卡片里需要的高度。"""
+    box = image.getbbox()
+    if box:
+        image = image.crop(box)
     if image.height != CARD_SPRITE_HEIGHT:
         scale = CARD_SPRITE_HEIGHT / image.height
         image = image.resize(
@@ -151,6 +155,24 @@ def render_view(skin: Image.Image, model: str, back: bool = False) -> Image.Imag
             Image.Resampling.LANCZOS,
         )
     return image
+
+
+async def render_view(skin: Image.Image, model: str, back: bool = False) -> Image.Image:
+    """渲染正面或背面的立体立绘：优先 skinview3d，失败回退到内置软件渲染。"""
+    if SkinView.available():
+        buffer = io.BytesIO()
+        try:
+            skin.save(buffer, format='PNG')
+            yaw = (math.pi + 0.35) if back else 0.35
+            raw = await SkinView.render(buffer.getvalue(), model, 'idle', yaw, 400)
+            if raw:
+                with Image.open(io.BytesIO(raw)) as image:
+                    return _fit_sprite(image.convert('RGBA'))
+        except Exception as error:
+            logger.debug(f'玩家卡：skinview3d 渲染失败（{error}）')
+
+    image = render_character(skin, model=model, back=back)
+    return _fit_sprite(image)
 
 
 def render_cape(cape: Image.Image) -> Image.Image:
@@ -205,10 +227,12 @@ async def ensure_font() -> Path | None:
     return None
 
 
-def build_card(name: str, uuid: str, skin: Image.Image, cape: Image.Image | None, model: str, font_path: Path | None) -> bytes:
+async def build_card(
+    name: str, uuid: str, skin: Image.Image, cape: Image.Image | None, model: str, font_path: Path | None
+) -> bytes:
     """把正/背视图与披风拼成一张卡片，返回 PNG 字节。"""
-    front = render_view(skin, model, back=False)
-    back = render_view(skin, model, back=True)
+    front = await render_view(skin, model, back=False)
+    back = await render_view(skin, model, back=True)
 
     width, height = 780, 460
     card = Image.new('RGBA', (width, height), (0, 0, 0, 0))
@@ -279,7 +303,7 @@ async def build_player_card(target: str) -> bytes:
         raise RuntimeError('皮肤贴图下载失败')
 
     font_path = await ensure_font()
-    data = await asyncio.to_thread(build_card, name, uuid, skin, cape, model, font_path)
+    data = await build_card(name, uuid, skin, cape, model, font_path)
     _cache_put(cache_key, data)
     return data
 
