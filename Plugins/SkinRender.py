@@ -323,7 +323,10 @@ def _rasterize(canvas, zbuffer, skin, rect, quad, shade, depths):
     dy = grid_y - p00[1]
     u = (dx * by - dy * bx) / det
     v = (ax * dy - ay * dx) / det
-    mask = (u >= 0) & (u <= 1) & (v >= 0) & (v <= 1)
+    # 稍微放宽边界：两个相邻的面共用一条棱，像素中心正好落在这条棱上时
+    # 两个面都不认为覆盖它，缩小后就会露出背景，形成一条黑缝（部件接缝处特别明显）。
+    eps = 0.045
+    mask = (u >= -eps) & (u <= 1 + eps) & (v >= -eps) & (v <= 1 + eps)
     if not mask.any():
         return
 

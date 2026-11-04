@@ -434,6 +434,44 @@ def format_count(value: int | None) -> str:
 
 
 SKIN_SUFFIXES = ('.customskin', '.playerskin', '.urlskin')
+MOJANG_PROFILE_URL = 'https://api.mojang.com/users/profiles/minecraft/{name}'
+MOJANG_SESSION_URL = 'https://sessionserver.mojang.com/session/minecraft/profile/{uuid}'
+MOJANG_TTL = 6 * 3600
+MOJANG_MISS_TTL = 3600
+_mojang_cache: dict[str, tuple[float, tuple[str, str] | None]] = {}
+
+
+async def _mojang_skin(name: str) -> tuple[str, str] | None:
+    """查正版账号的皮肤地址；查不到会缓存 1 小时，避免每次查询都打 Mojang。"""
+    key = name.casefold()
+    now = time.time()
+    cached = _mojang_cache.get(key)
+    if cached:
+        ttl = MOJANG_TTL if cached[1] else MOJANG_MISS_TTL
+        if now - cached[0] < ttl:
+            return cached[1]
+
+    result = None
+    try:
+        async with AsyncClient(timeout=SKIN_TIMEOUT) as client:
+            response = await client.get(MOJANG_PROFILE_URL.format(name=name))
+            if response.status_code == 200:
+                uuid = (response.json() or {}).get('id')
+                if uuid:
+                    session = await client.get(MOJANG_SESSION_URL.format(uuid=uuid))
+                    if session.status_code == 200:
+                        for prop in (session.json() or {}).get('properties') or []:
+                            if prop.get('name') != 'textures' or not prop.get('value'):
+                                continue
+                            textures = json.loads(base64.b64decode(prop['value']))
+                            skin = textures['textures']['SKIN']
+                            model = str((skin.get('metadata') or {}).get('model') or 'classic').lower()
+                            result = (skin['url'], model)
+                            break
+    except Exception as error:
+        logger.debug(f'玩家统计：查询正版皮肤失败（{error}）')
+    _mojang_cache[key] = (now, result)
+    return result
 SKIN_DISK_DIR = Path('Data/SkinCache')
 SKIN_TIMEOUT = 6.0
 _skin_cache: dict[str, tuple[float, Image.Image | None, str]] = {}
@@ -478,8 +516,17 @@ def _read_textures(path: Path) -> tuple[str, str] | None:
         return None
 
 
-async def fetch_skin(profile: Profile, uuid: str) -> tuple[Image.Image, str] | None:
-    """按 UUID 从 SkinsRestorer 的皮肤库取一张皮肤，取不到返回 None。"""
+async def fetch_skin(profile: Profile, uuid: str, name: str = '') -> tuple[Image.Image, str] | None:
+    """取玩家皮肤：先查正版账号，再退到 SkinsRestorer 的皮肤库，都没有就返回 None（外面用默认皮肤）。"""
+    # 1) 正版账号（Mojang）优先
+    if name:
+        premium = await _mojang_skin(name)
+        if premium:
+            image = await _download_texture(premium[0])
+            if image is not None:
+                return (image, premium[1])
+
+    # 2) 本地皮肤库
     if not uuid or not profile.skins_players or not profile.skins_library:
         return None
     player_file = profile.skins_players / f'{uuid}.player'
@@ -713,7 +760,7 @@ async def handle_stats(event: MessageEvent, args: Message = CommandArg()):
             f'在「{profile.name}」里没有找到玩家 {target} 的记录。\n'
             f'可能是名字拼错，或者他从没在这个服玩过。（可查询的服：{"、".join(names)}）'
         )
-    skin = await fetch_skin(profile, stats.uuid)
+    skin = await fetch_skin(profile, stats.uuid, stats.name)
     card = None
     try:
         card = build_card(stats, skin)
