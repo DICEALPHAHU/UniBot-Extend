@@ -77,6 +77,54 @@ STAT_PLAY_TIME = 'minecraft:play_time'
 STAT_MOB_KILLS = 'minecraft:mob_kills'
 STAT_DEATHS = 'minecraft:deaths'
 
+# 移动距离相关的统计项（单位：厘米）
+DISTANCE_KEYS = (
+    'minecraft:walk_one_cm',
+    'minecraft:sprint_one_cm',
+    'minecraft:crouch_one_cm',
+    'minecraft:swim_one_cm',
+    'minecraft:fly_one_cm',
+    'minecraft:fall_one_cm',
+    'minecraft:boat_one_cm',
+    'minecraft:minecart_one_cm',
+    'minecraft:horse_one_cm',
+    'minecraft:aviate_one_cm',
+    'minecraft:strider_one_cm',
+)
+
+# 常见方块/生物的中文名，查不到就用去掉命名空间的原 id
+NAME_ZH = {
+    'stone': '石头', 'cobblestone': '圆石', 'dirt': '泥土', 'grass_block': '草方块',
+    'sand': '沙子', 'gravel': '砂砾', 'oak_log': '橡木原木', 'birch_log': '白桦原木',
+    'spruce_log': '云杉原木', 'jungle_log': '丛林原木', 'acacia_log': '金合欢原木',
+    'dark_oak_log': '深色橡木原木', 'cherry_log': '樱花原木', 'coal_ore': '煤矿石',
+    'iron_ore': '铁矿石', 'copper_ore': '铜矿石', 'gold_ore': '金矿石',
+    'redstone_ore': '红石矿石', 'lapis_ore': '青金石矿石', 'diamond_ore': '钻石矿石',
+    'emerald_ore': '绿宝石矿石', 'deepslate': '深板岩', 'netherrack': '下界岩',
+    'basalt': '玄武岩', 'blackstone': '黑石', 'obsidian': '黑曜石', 'nether_quartz_ore': '下界石英矿石',
+    'ancient_debris': '远古残骸', 'snow': '雪', 'ice': '冰', 'kelp': '海带',
+    'short_grass': '矮草丛', 'tall_grass': '高草丛', 'fern': '蕨', 'dandelion': '蒲公英',
+    'poppy': '虞美人', 'torch': '火把', 'crafting_table': '工作台', 'furnace': '熔炉',
+    'chest': '箱子', 'oak_planks': '橡木木板', 'glass': '玻璃', 'bricks': '砖块',
+    'zombie': '僵尸', 'skeleton': '骷髅', 'creeper': '苦力怕', 'spider': '蜘蛛',
+    'enderman': '末影人', 'witch': '女巫', 'slime': '史莱姆', 'cow': '牛',
+    'pig': '猪', 'sheep': '羊', 'chicken': '鸡', 'rabbit': '兔子', 'villager': '村民',
+    'drowned': '溺尸', 'husk': '尸壳', 'stray': '流浪者', 'phantom': '幻翼',
+    'blaze': '烈焰人', 'ghast': '恶魂', 'wither_skeleton': '凋灵骷髅', 'guardian': '守卫者',
+    'pillager': '掠夺者', 'vindicator': '卫道士', 'ravager': '劫掠兽', 'silverfish': '蠹虫',
+    'cave_spider': '洞穴蜘蛛', 'magma_cube': '岩浆怪', 'hoglin': '疣猪兽', 'zoglin': '僵尸疣猪兽',
+    'piglin': '猪灵', 'wolf': '狼', 'cat': '猫', 'horse': '马', 'player': '玩家',
+    'warden': '监守者', 'wither': '凋灵', 'ender_dragon': '末影龙', 'elder_guardian': '远古守卫者',
+    'shulker': '潜影贝', 'vex': '恼鬼', 'evoker': '唤魔者', 'zombified_piglin': '僵尸猪灵',
+    'cherry_leaves': '樱花树叶', 'oak_leaves': '橡木树叶', 'grass': '草', 'clay': '黏土',
+    'andesite': '安山岩', 'diorite': '闪长岩', 'granite': '花岗岩', 'tuff': '凝灰岩',
+    'calcite': '方解石', 'dripstone_block': '滴水石块', 'moss_block': '苔藓块', 'mud': '泥巴',
+    'nether_gold_ore': '下界金矿石', 'copper_block': '铜块', 'iron_block': '铁块',
+    'gold_block': '金块', 'diamond_block': '钻石块', 'coal_block': '煤炭块',
+    'hay_block': '干草捆', 'melon': '西瓜', 'pumpkin': '南瓜', 'sugar_cane': '甘蔗',
+    'bamboo': '竹子', 'cactus': '仙人掌', 'vine': '藤蔓', 'lily_pad': '睡莲',
+}
+
 PLAN_TIMEOUT = 3.0
 PLAN_CACHE_SECONDS = 60
 STATS_CACHE_SECONDS = 60
@@ -129,6 +177,18 @@ class PlayerStats:
     crafted: int | None = None
     mob_kills: int | None = None
     deaths: int | None = None
+    # 细项
+    distance_cm: int | None = None
+    jumps: int | None = None
+    damage_dealt: int | None = None
+    broken: int | None = None
+    fish_caught: int | None = None
+    sleep_in_bed: int | None = None
+    animals_bred: int | None = None
+    # 趣味：最爱挖的方块 / 最常杀的生物 / 最常死在谁手里
+    favorite_block: tuple[str, int] | None = None
+    favorite_mob: tuple[str, int] | None = None
+    worst_killer: tuple[str, int] | None = None
 
 
 # ===== 配置 =====
@@ -323,6 +383,16 @@ def collect_stats(profile: Profile, player: str) -> PlayerStats:
     stats.crafted = sum((data.get(SECTION_CRAFTED) or {}).values())
     stats.mob_kills = custom.get(STAT_MOB_KILLS)
     stats.deaths = custom.get(STAT_DEATHS)
+    stats.distance_cm = sum(custom.get(key) or 0 for key in DISTANCE_KEYS)
+    stats.jumps = custom.get('minecraft:jump')
+    stats.damage_dealt = custom.get('minecraft:damage_dealt')
+    stats.fish_caught = custom.get('minecraft:fish_caught')
+    stats.sleep_in_bed = custom.get('minecraft:sleep_in_bed')
+    stats.animals_bred = custom.get('minecraft:animals_bred')
+    stats.broken = sum((data.get('minecraft:broken') or {}).values()) or None
+    stats.favorite_block = _top_entry(data.get(SECTION_MINED))
+    stats.favorite_mob = _top_entry(data.get('minecraft:killed'))
+    stats.worst_killer = _top_entry(data.get('minecraft:killed_by'))
     return stats
 
 
@@ -428,6 +498,25 @@ def format_duration(milliseconds: int | None) -> str:
     if minutes:
         return f'{minutes} 分 {secs} 秒'
     return f'{secs} 秒'
+
+
+def _top_entry(block: dict | None) -> tuple[str, int] | None:
+    """取字典里数量最大的一项，返回 (中文名, 数量)。"""
+    if not block:
+        return None
+    key, value = max(block.items(), key=lambda item: item[1])
+    name = str(key).split(':')[-1]
+    return NAME_ZH.get(name, name), value
+
+
+def format_distance(centimeters: int | None) -> str:
+    """厘米 -> 米 / 公里。"""
+    if centimeters is None:
+        return '—'
+    meters = centimeters / 100
+    if meters < 1000:
+        return f'{meters:.0f} 米'
+    return f'{meters / 1000:.1f} 公里'
 
 
 def format_count(value: int | None) -> str:
@@ -668,13 +757,40 @@ def build_card(stats: PlayerStats, character: Image.Image | None = None) -> byte
 
     since = _settings.plan_since
     note = f'在线 / 活跃 / 挂机 自 {since} 起统计' if since else ''
-    note_height = 30 if note else 0
+    note_height = 46 if note else 0
+
+    # 细项：两列两行 + 一行琐事 + 两行趣味
+    detail_pairs = [
+        ('总里程', format_distance(stats.distance_cm), '跳跃次数', format_count(stats.jumps)),
+        ('造成伤害', format_count(stats.damage_dealt), '工具损坏', format_count(stats.broken)),
+    ]
+    trivia = ' · '.join(
+        item
+        for item in (
+            f'钓鱼 {stats.fish_caught}' if stats.fish_caught else '',
+            f'睡觉 {stats.sleep_in_bed}' if stats.sleep_in_bed else '',
+            f'繁殖 {stats.animals_bred}' if stats.animals_bred else '',
+        )
+        if item
+    )
+    fun_candidates = [
+        ('最爱挖', stats.favorite_block),
+        ('最常杀', stats.favorite_mob),
+        ('最常死在', stats.worst_killer),
+    ]
+    fun_rows = [(label, entry) for label, entry in fun_candidates if entry]
+    random.shuffle(fun_rows)
+    fun_rows = fun_rows[:2]
 
     width = CARD_WIDTH
     header_height = 128
     rows_height = ROW_HEIGHT * len(rows)
     body_height = max(rows_height, (character.height + 8) if character else 0)
-    height = header_height + body_height + PADDING - 4 + note_height
+    detail_top = header_height + body_height + 6
+    detail_row_height = 34
+    detail_height = detail_row_height * len(detail_pairs)
+    series_height = 30 + 30 * len(fun_rows) if (trivia or fun_rows) else 0
+    height = detail_top + detail_height + series_height + PADDING + note_height + 4
 
     card = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(card)
@@ -720,10 +836,37 @@ def build_card(stats: PlayerStats, character: Image.Image | None = None) -> byte
             (rows_x + rows_width - value_width, y), value, font=value_font, fill=(238, 240, 244, 255)
         )
 
+    # ===== 细项区 =====
+    detail_font = _font(18)
+    detail_top_line = detail_top - 2
+    draw.line(
+        (PADDING, detail_top_line, width - PADDING, detail_top_line),
+        fill=(54, 56, 62, 255),
+        width=1,
+    )
+    half = (width - PADDING * 2) // 2
+    for row_index, (label_a, value_a, label_b, value_b) in enumerate(detail_pairs):
+        y = detail_top + row_index * detail_row_height
+        for column, (label, value) in enumerate(((label_a, value_a), (label_b, value_b))):
+            x = PADDING + column * half
+            draw.text((x, y), label, font=detail_font, fill=(140, 142, 148, 255))
+            label_width = draw.textlength(label, font=detail_font)
+            draw.text((x + label_width + 10, y), value, font=detail_font, fill=(220, 222, 228, 255))
+
+    series_y = detail_top + detail_height + 2
+    series_font = _font(17)
+    if trivia:
+        draw.text((PADDING, series_y), trivia, font=series_font, fill=(140, 142, 148, 255))
+        series_y += 30
+    for label, (name, count) in fun_rows:
+        text = f'{label}：{name} × {count:,}'
+        draw.text((PADDING, series_y), text, font=series_font, fill=(150, 152, 158, 255))
+        series_y += 30
+
     if note:
         small_font = _font(15)
         draw.text(
-            (PADDING, height - PADDING + 2),
+            (PADDING, height - PADDING - 16),
             note,
             font=small_font,
             fill=(110, 112, 118, 255),
@@ -746,7 +889,27 @@ def build_text(stats: PlayerStats) -> str:
         f'合成物品：{format_count(stats.crafted)}',
         f'击杀生物：{format_count(stats.mob_kills)}',
         f'死亡次数：{format_count(stats.deaths)}',
+        f'总里程：{format_distance(stats.distance_cm)} · 跳跃：{format_count(stats.jumps)}',
+        f'造成伤害：{format_count(stats.damage_dealt)} · 工具损坏：{format_count(stats.broken)}',
     ]
+    trivia = ' · '.join(
+        item
+        for item in (
+            f'钓鱼 {stats.fish_caught}' if stats.fish_caught else '',
+            f'睡觉 {stats.sleep_in_bed}' if stats.sleep_in_bed else '',
+            f'繁殖 {stats.animals_bred}' if stats.animals_bred else '',
+        )
+        if item
+    )
+    if trivia:
+        lines.append(trivia)
+    for label, entry in (
+        ('最爱挖', stats.favorite_block),
+        ('最常杀', stats.favorite_mob),
+        ('最常死在', stats.worst_killer),
+    ):
+        if entry:
+            lines.append(f'{label}：{entry[0]} × {entry[1]:,}')
     return '\n'.join(lines)
 
 

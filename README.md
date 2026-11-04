@@ -249,6 +249,9 @@
 | 约计放置 | `stats/used` 求和，**只取方块类物品** | 原版没有「放置」统计，这是「使用方块类物品」的次数；水/岩浆桶不计入 |
 | 合成物品 | `stats/crafted` 求和 | 全历史精确 |
 | 击杀生物 / 死亡次数 | `custom.mob_kills` / `custom.deaths` | 精确 |
+| 总里程 / 跳跃 / 造成伤害 / 工具损坏 | `custom` 里各项求和 | 精确 |
+| 钓鱼 / 睡觉 / 繁殖 | `custom.fish_caught` / `sleep_in_bed` / `animals_bred` | 精确 |
+| 最爱挖的方块 / 最常杀的生物 / 最常死因 | `mined` / `killed` / `killed_by` 取最大值 | 每次随机展示其中两条 |
 
 > 没开图片模式（`Config.toml` 的 `[image] mode = false`）时，`/stats` 直接发纯文字，不做任何渲染。
 
