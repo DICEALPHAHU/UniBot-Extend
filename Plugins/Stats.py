@@ -418,7 +418,7 @@ def build_card(stats: PlayerStats, font_path: Path | None = None) -> bytes:
         ('活跃时长', format_duration(stats.active_ms)),
         ('挂机时长', format_duration(stats.afk_ms)),
         ('挖掘方块', format_count(stats.mined)),
-        ('放置方块（≈）', format_count(stats.placed)),
+        ('约计放置', format_count(stats.placed)),
         ('合成物品', format_count(stats.crafted)),
         ('击杀生物', format_count(stats.mob_kills)),
         ('死亡次数', format_count(stats.deaths)),
@@ -469,7 +469,7 @@ def build_card(stats: PlayerStats, font_path: Path | None = None) -> bytes:
     footnote_y = top + ROW_HEIGHT * len(rows) + 14
     draw.text(
         (PADDING, footnote_y),
-        '数据：原版统计；放置为「使用方块物品」的近似值',
+        '数据：原版统计；「约计放置」= 使用方块类物品的次数',
         font=small_font,
         fill=(110, 112, 118, 255),
     )
@@ -494,7 +494,7 @@ def build_text(stats: PlayerStats) -> str:
         f'活跃时长：{format_duration(stats.active_ms)}',
         f'挂机时长：{format_duration(stats.afk_ms)}',
         f'挖掘方块：{format_count(stats.mined)}',
-        f'放置方块（≈）：{format_count(stats.placed)}',
+        f'约计放置：{format_count(stats.placed)}',
         f'合成物品：{format_count(stats.crafted)}',
         f'击杀生物：{format_count(stats.mob_kills)}',
         f'死亡次数：{format_count(stats.deaths)}',

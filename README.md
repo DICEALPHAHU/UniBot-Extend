@@ -246,7 +246,7 @@
 |---|---|---|
 | 在线 / 活跃 / 挂机 | [Plan](https://github.com/plan-player-analytics/Plan) 的本地 HTTP API（`/v1/player` 的 `info`） | 单位毫秒；只统计 Plan 装上之后的游玩 |
 | 挖掘方块 | `stats/mined` 求和 | 全历史精确 |
-| 放置方块（≈） | `stats/used` 求和，**只取方块类物品** | 原版没有「放置」统计，用「使用方块物品」近似；水/岩浆桶不计入 |
+| 约计放置 | `stats/used` 求和，**只取方块类物品** | 原版没有「放置」统计，这是「使用方块类物品」的次数；水/岩浆桶不计入 |
 | 合成物品 | `stats/crafted` 求和 | 全历史精确 |
 | 击杀生物 / 死亡次数 | `custom.mob_kills` / `custom.deaths` | 精确 |
 
