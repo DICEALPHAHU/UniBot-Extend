@@ -8,7 +8,7 @@
 """
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 # 相机参数：偏航 31°、俯角 28.6°，配合 100 格的相机距离做轻度透视。
 # 正交投影（距离无限远）会让角色看起来像贴纸，这里保留一点近大远小。
@@ -47,20 +47,45 @@ POSES = {
     'wave': {'right_arm': [('z', 2.6)], 'head': [('y', -0.2), ('z', -0.08)]},
     'cheer': {'right_arm': [('z', 2.5)], 'left_arm': [('z', -2.5)], 'head': [('x', -0.12)]},
     'walk': {
-        'right_arm': [('x', 0.55)],
-        'left_arm': [('x', -0.45)],
-        'right_leg': [('x', -0.45)],
-        'left_leg': [('x', 0.4)],
+        'right_arm': [('x', 0.4)],
+        'left_arm': [('x', -0.3)],
+        'right_leg': [('x', -0.32)],
+        'left_leg': [('x', 0.3)],
     },
     'run': {
-        'right_arm': [('x', 1.15)],
-        'left_arm': [('x', -0.95)],
-        'right_leg': [('x', -0.85)],
-        'left_leg': [('x', 0.7)],
+        'right_arm': [('x', 0.9)],
+        'left_arm': [('x', -0.75)],
+        'right_leg': [('x', -0.6)],
+        'left_leg': [('x', 0.5)],
         'head': [('x', -0.1)],
     },
     'point': {'right_arm': [('x', -1.45)], 'head': [('y', -0.15)]},
     'think': {'right_arm': [('x', -1.2), ('z', 0.55)], 'head': [('x', 0.14)]},
+    # 坐下：两条腿向前放平，上身略后仰
+    'sit': {
+        'right_leg': [('x', -1.5)],
+        'left_leg': [('x', -1.5)],
+        'body': [('x', 0.12)],
+        'right_arm': [('x', -0.25)],
+        'left_arm': [('x', -0.25)],
+    },
+    # 抱臂：两条手臂收到胸前
+    'cross_arms': {
+        'right_arm': [('x', -1.35), ('z', 0.5)],
+        'left_arm': [('x', -1.35), ('z', -0.5)],
+    },
+    # 拿东西：右臂前伸，手里挂一件物品
+    'hold': {'right_arm': [('x', -0.85)], 'head': [('y', -0.08)]},
+    'hold_high': {'right_arm': [('x', -2.3), ('z', 0.15)], 'head': [('x', -0.12)]},
+    # 吃东西：手抬到嘴边
+    'eat': {'right_arm': [('x', -2.15), ('z', 0.3)], 'head': [('x', 0.05)]},
+}
+
+# 哪些姿势会拿东西，以及可以拿什么（对应 ITEMS 的键）
+POSE_ITEMS = {
+    'hold': ('sword', 'pickaxe', 'diamond'),
+    'hold_high': ('torch', 'sword'),
+    'eat': ('apple',),
 }
 
 # 每个面的明暗，模拟简单的方向光
@@ -146,6 +171,77 @@ SLIM_RECTS = {
         'back': (43, 52, 46, 64),
     },
 }
+
+
+def _item_sword() -> Image.Image:
+    """一把像素风的剑。"""
+    img = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.line([(3, 13), (12, 4)], fill=(198, 198, 205, 255), width=2)
+    draw.line([(4, 12), (11, 5)], fill=(240, 240, 246, 255), width=1)
+    draw.line([(6, 10), (10, 14)], fill=(150, 105, 55, 255), width=2)
+    draw.line([(2, 14), (5, 11)], fill=(115, 78, 40, 255), width=2)
+    return img
+
+
+def _item_pickaxe() -> Image.Image:
+    """一把像素风的镐。"""
+    img = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.line([(4, 12), (11, 5)], fill=(115, 78, 40, 255), width=2)
+    draw.line([(5, 4), (10, 3)], fill=(200, 200, 208, 255), width=2)
+    draw.line([(10, 3), (12, 8)], fill=(200, 200, 208, 255), width=2)
+    draw.line([(6, 4), (11, 4)], fill=(238, 238, 244, 255), width=1)
+    return img
+
+
+def _item_torch() -> Image.Image:
+    """火把。"""
+    img = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((7, 6, 9, 14), fill=(120, 82, 42, 255))
+    draw.rectangle((7, 2, 9, 6), fill=(250, 190, 60, 255))
+    draw.rectangle((7, 2, 8, 4), fill=(255, 235, 140, 255))
+    return img
+
+
+def _item_diamond() -> Image.Image:
+    """钻石。"""
+    img = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.polygon([(8, 2), (13, 7), (8, 14), (3, 7)], fill=(90, 220, 220, 255))
+    draw.polygon([(8, 2), (11, 7), (8, 12), (5, 7)], fill=(160, 245, 245, 255))
+    return img
+
+
+def _item_apple() -> Image.Image:
+    """苹果。"""
+    img = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse((3, 5, 13, 14), fill=(205, 40, 45, 255))
+    draw.ellipse((5, 6, 9, 10), fill=(240, 95, 95, 255))
+    draw.rectangle((7, 2, 8, 5), fill=(110, 75, 40, 255))
+    draw.polygon([(8, 4), (12, 2), (12, 5)], fill=(70, 175, 70, 255))
+    return img
+
+
+_ITEM_BUILDERS = {
+    'sword': _item_sword,
+    'pickaxe': _item_pickaxe,
+    'torch': _item_torch,
+    'diamond': _item_diamond,
+    'apple': _item_apple,
+}
+_item_cache: dict[str, Image.Image] = {}
+
+
+def item_texture(name: str) -> Image.Image | None:
+    """取一个物品图标（首次调用时生成，16x16）。"""
+    if name not in _ITEM_BUILDERS:
+        return None
+    if name not in _item_cache:
+        _item_cache[name] = _ITEM_BUILDERS[name]()
+    return _item_cache[name]
 
 
 def _upgrade_legacy(skin: Image.Image) -> Image.Image:
@@ -331,6 +427,7 @@ def render_character(
     ppu: int = PPU,
     yaw: float = VIEW_YAW,
     pose: dict | None = None,
+    item: Image.Image | None = None,
 ) -> Image.Image:
     """把皮肤渲染成有厚度的正面（back=True 时背面）视图，透明背景。
 
@@ -346,6 +443,18 @@ def render_character(
     max_x = max(point[0] for point in points)
     min_y = min(point[1] for point in points)
     max_y = max(point[1] for point in points)
+
+    # 手里有东西的话，取景框要把物品也包进去
+    hand_xy = None
+    if item is not None:
+        rotations = (pose or {}).get('right_arm') or ()
+        hand = _apply_pose((6.0, 13.0, 1.0), PART_PIVOTS['right_arm'], rotations)
+        hx, hy, _ = camera.project((hand[0], hand[1], hand[2] + 2.5))
+        hand_xy = (hx, hy)
+        min_x = min(min_x, hx - 7)
+        max_x = max(max_x, hx + 7)
+        min_y = min(min_y, hy - 13)
+        max_y = max(max_y, hy + 2)
     pad = 0.6
     scale = ppu * SUPERSAMPLE
     px_w = int(np.ceil((max_x - min_x + pad * 2) * scale))
@@ -360,4 +469,17 @@ def render_character(
         _rasterize(canvas, pixels, rect, [to_pixel(corner) for corner in quad], FACE_SHADE[face])
 
     image = Image.fromarray((np.clip(canvas, 0, 1) * 255).astype(np.uint8), 'RGBA')
-    return image.resize((max(1, px_w // SUPERSAMPLE), max(1, px_h // SUPERSAMPLE)), Image.Resampling.LANCZOS)
+    image = image.resize((max(1, px_w // SUPERSAMPLE), max(1, px_h // SUPERSAMPLE)), Image.Resampling.LANCZOS)
+
+    if item is not None and hand_xy is not None:
+        # 物品画在角色之上，尺寸按模型比例走
+        size = max(4, int(10.5 * ppu))
+        sprite = item.resize((size, size), Image.Resampling.NEAREST)
+        px, py = to_pixel(hand_xy)
+        px /= SUPERSAMPLE
+        py /= SUPERSAMPLE
+        left = int(max(0, min(image.width - size, px - size * 0.5)))
+        top = int(max(0, min(image.height - size, py - size * 0.5)))
+        image.alpha_composite(sprite, (left, top))
+
+    return image

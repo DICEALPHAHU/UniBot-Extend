@@ -37,7 +37,7 @@ from PIL import Image, ImageDraw, ImageFont
 from Scripts import Globals
 from Scripts.Logging import logger
 from .HelpEntry import register_help_commands
-from .SkinRender import FACE_RECTS, POSES, render_character
+from .SkinRender import FACE_RECTS, POSE_ITEMS, POSES, item_texture, render_character
 from .Watermark import apply_watermark
 
 CONFIG_PATH = Path('Data/MCStats.toml')
@@ -558,10 +558,14 @@ def build_card(stats: PlayerStats, skin: tuple[Image.Image, str] | None = None) 
     # 随机姿势 + 随机朝向，每次查询都有点新鲜感
     character = None
     image, model = skin if skin is not None else (fallback_skin(), 'classic')
-    pose = POSES[random.choice(list(POSES))]
+    pose_name = random.choice(list(POSES))
+    pose = POSES[pose_name]
+    item = None
+    if pose_name in POSE_ITEMS:
+        item = item_texture(random.choice(POSE_ITEMS[pose_name]))
     yaw = random.uniform(-0.35, 0.55)
     try:
-        character = render_character(image, model=model, ppu=8, yaw=yaw, pose=pose)
+        character = render_character(image, model=model, ppu=8, yaw=yaw, pose=pose, item=item)
     except Exception as error:
         logger.debug(f'玩家统计：3D 渲染失败（{error}）')
 
