@@ -22,10 +22,31 @@ BUNDLE = VIEWER_DIR / 'skinview3d.bundle.js'
 CANVAS_SIZE = 420
 RENDER_TIMEOUT = 20.0
 
-# 用 skinview3d 自带的动画当姿势：动作幅度和关节角度都是调好的
+# 姿势表：要么用 skinview3d 自带动画（幅度自然），要么手摆关节（注意旋转轴是
+# three.js 的本地坐标，手臂竖直向下是 0，绕 z 转到 3.9 左右才是举手）。
 ANIMATIONS = ('idle', 'walk', 'run')
-# 动画跑起来之后截图的时刻（毫秒），随机取，同一个动画每次定格都不一样
-FRAME_DELAY = (250, 900)
+
+POSES: dict[str, dict[str, list[float]]] = {
+    'wave': {'rightArm': [0, 0, 3.9], 'head': [0, 0.15, 0.05]},
+    'cheer': {'rightArm': [0, 0, 3.9], 'leftArm': [0, 0, -3.9]},
+    'point': {'rightArm': [-1.5, 0, 0], 'head': [0, -0.2, 0]},
+    'think': {'rightArm': [-1.0, 0, 0.9], 'head': [0.15, 0, 0]},
+    'cross': {'rightArm': [-1.25, 0, 0.3], 'leftArm': [-1.25, 0, -0.3]},
+    'shrug': {'rightArm': [0, 0, 1.2], 'leftArm': [0, 0, -1.2], 'head': [-0.1, 0, 0]},
+    'facepalm': {'rightArm': [-1.2, 0, 2.2], 'head': [0.25, 0, 0]},
+    'salute': {'rightArm': [-0.5, 0, 2.6], 'head': [-0.05, 0, 0]},
+    'sit': {
+        'rightLeg': [-1.5, 0, 0],
+        'leftLeg': [-1.5, 0, 0],
+        'rightArm': [-0.4, 0, 0],
+        'leftArm': [-0.4, 0, 0],
+    },
+}
+
+# 所有可选项：动画 + 静态姿势
+POSE_NAMES = tuple(ANIMATIONS) + tuple(POSES)
+# 定格时刻（毫秒）：动画要跑一会儿才自然，静态姿势几十毫秒就够
+FRAME_DELAY = {'default': (250, 900), 'pose': (150, 260)}
 
 _browser = None
 _page = None
@@ -55,12 +76,21 @@ async def _ensure_page():
     return _page
 
 
+def pose_spec(name: str) -> dict:
+    """把姿势名转成 viewer 认识的 spec。"""
+    if name in POSES:
+        return {'pose': POSES[name]}
+    if name in ANIMATIONS:
+        return {'animation': name}
+    return {'animation': 'idle'}
+
+
 async def render(
     skin: bytes,
     model: str = 'classic',
-    animation: str = 'idle',
+    pose: str = 'idle',
     yaw: float = 0.35,
-    delay_ms: int = 500,
+    delay_ms: int | None = None,
 ) -> bytes | None:
     """渲染一张透明背景的皮肤立绘（PNG 字节）；失败返回 None。"""
     if not available():
@@ -71,13 +101,18 @@ async def render(
     import base64
 
     data_url = 'data:image/png;base64,' + base64.b64encode(skin).decode()
+    spec = pose_spec(pose)
+    if delay_ms is None:
+        low, high = FRAME_DELAY['pose'] if 'pose' in spec else FRAME_DELAY['default']
+        import random as _random
+        delay_ms = _random.randint(low, high)
     async with _lock:
         try:
             page = await _ensure_page()
             await asyncio.wait_for(
                 page.evaluate(
-                    '([skin, model, animation, yaw]) => window.play(skin, model, animation, yaw)',
-                    [data_url, model, animation, yaw],
+                    '([skin, model, spec, yaw]) => window.play(skin, model, spec, yaw)',
+                    [data_url, model, spec, yaw],
                 ),
                 timeout=RENDER_TIMEOUT,
             )

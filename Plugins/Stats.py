@@ -627,11 +627,7 @@ async def render_character_image(skin: tuple[Image.Image, str] | None) -> Image.
     try:
         image.save(buffer, format='PNG')
         raw = await SkinView.render(
-            buffer.getvalue(),
-            model,
-            random.choice(SkinView.ANIMATIONS),
-            yaw,
-            random.randint(*SkinView.FRAME_DELAY),
+            buffer.getvalue(), model, random.choice(SkinView.POSE_NAMES), yaw
         )
         if raw:
             prepared = _prepare_character(raw)
