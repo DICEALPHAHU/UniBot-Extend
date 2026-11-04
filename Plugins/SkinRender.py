@@ -175,11 +175,26 @@ def _upgrade_legacy(skin: Image.Image) -> Image.Image:
     return canvas
 
 
+def _has_head_overlay(skin: Image.Image) -> bool:
+    """64x32 的皮肤里，帽子层那块区域（32,0)-(64,16）是否有内容。
+
+    有些皮肤其实是 64x64，只是下半部分全透明、被导出工具截成了 64x32；
+    这种情况下帽子层还留在右上角，不能当成「老皮肤」把第二层丢掉。
+    """
+    try:
+        alpha = skin.convert('RGBA').crop((32, 0, 64, 16)).getchannel('A')
+        pixels = list(alpha.getdata())
+        return sum(1 for value in pixels if value > 0) / max(1, len(pixels)) > 0.05
+    except Exception:
+        return False
+
+
 def prepare_skin(skin: Image.Image) -> tuple[Image.Image, bool]:
     """统一成 64x64 并返回 (贴图, 是否老皮肤)。老皮肤没有第二层。"""
     skin = skin.convert('RGBA')
     if skin.height < 64:
-        return _upgrade_legacy(skin), True
+        # 先补成 64x64（左半身镜像），再根据右上角是否有帽子层决定要不要渲染第二层
+        return _upgrade_legacy(skin), not _has_head_overlay(skin)
     if skin.size != (64, 64):
         skin = skin.resize((64, 64), Image.Resampling.NEAREST)
     return skin, False
