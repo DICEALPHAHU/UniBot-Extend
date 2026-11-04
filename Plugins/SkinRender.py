@@ -377,14 +377,20 @@ def _collect(camera: Camera, model: str, legacy: bool, pose: dict | None = None)
     return faces
 
 
-def _rasterize(canvas, skin, rect, quad, shade):
-    """把一个面的贴图按透视四边形画到画布上（双线性逆映射）。"""
+def _rasterize(canvas, zbuffer, skin, rect, quad, shade, depths):
+    """把一个面的贴图按透视四边形画到画布上（双线性逆映射 + 逐像素深度测试）。
+
+    画家算法（只按面的平均深度排序）在面片互相穿插时会排错，
+    第二层皮肤（帽子/外套）尤其明显；这里用 z-buffer 做逐像素遮挡判断。
+    """
     height, width = canvas.shape[:2]
     p00, p10, p11, p01 = quad
     ax, ay = p10[0] - p00[0], p10[1] - p00[1]
     bx, by = p01[0] - p00[0], p01[1] - p00[1]
     det = ax * by - ay * bx
-    if abs(det) < 1e-6:
+    # 侧向几乎平行于视线的面投影面积趋于 0，画出来只会得到一条抖动的细缝，
+    # 直接丢掉（第二层比第一层大一点，这种细缝特别容易在手臂边缘出现）
+    if abs(det) < 0.4:
         return
     xs = [point[0] for point in quad]
     ys = [point[1] for point in quad]
@@ -404,14 +410,34 @@ def _rasterize(canvas, skin, rect, quad, shade):
     if not mask.any():
         return
 
+    # 四边形是平面，参数空间里的深度插值是线性的，正好可以用 (u, v) 权重算
+    d00, d10, d11, d01 = depths
+    depth = (
+        d00 * (1 - u) * (1 - v)
+        + d10 * u * (1 - v)
+        + d11 * u * v
+        + d01 * (1 - u) * v
+    )
+
+    zbuf = zbuffer[y0:y1, x0:x1]
+    # 一点点深度偏移，避免两个面在数值上打平时出现逐像素的闪烁条纹
+    keep = mask & (depth < zbuf - 0.02)
+    if not keep.any():
+        return
+
     u0, v0, u1, v1 = rect
     tw, th = u1 - u0, v1 - v0
     tx = np.clip((u * tw).astype(np.int32), 0, tw - 1) + u0
     ty = np.clip((v * th).astype(np.int32), 0, th - 1) + v0
     src = skin[ty, tx].astype(np.float32) / 255.0
     src[..., :3] = np.clip(src[..., :3] * shade, 0, 1)
-    alpha = src[..., 3] * mask
 
+    opaque = keep & (src[..., 3] > 0.99)
+    if opaque.any():
+        # 只有不透明的像素才写深度，半透明的让后面的面继续参与混合
+        zbuf[opaque] = depth[opaque]
+
+    alpha = src[..., 3] * keep
     dst = canvas[y0:y1, x0:x1]
     out_alpha = alpha + dst[..., 3] * (1 - alpha)
     safe = np.where(out_alpha > 1e-6, out_alpha, 1)
@@ -460,13 +486,22 @@ def render_character(
     px_w = int(np.ceil((max_x - min_x + pad * 2) * scale))
     px_h = int(np.ceil((max_y - min_y + pad * 2) * scale))
     canvas = np.zeros((px_h, px_w, 4), dtype=np.float32)
+    zbuffer = np.full((px_h, px_w), np.inf, dtype=np.float32)
 
     def to_pixel(point):
         return ((point[0] - min_x + pad) * scale, (max_y - point[1] + pad) * scale)
 
     pixels = np.array(skin)
     for _, quad, rect, face in faces:
-        _rasterize(canvas, pixels, rect, [to_pixel(corner) for corner in quad], FACE_SHADE[face])
+        _rasterize(
+            canvas,
+            zbuffer,
+            pixels,
+            rect,
+            [to_pixel(corner) for corner in quad],
+            FACE_SHADE[face],
+            [corner[2] for corner in quad],
+        )
 
     image = Image.fromarray((np.clip(canvas, 0, 1) * 255).astype(np.uint8), 'RGBA')
     image = image.resize((max(1, px_w // SUPERSAMPLE), max(1, px_h // SUPERSAMPLE)), Image.Resampling.LANCZOS)
