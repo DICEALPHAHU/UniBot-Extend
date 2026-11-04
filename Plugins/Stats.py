@@ -16,8 +16,11 @@ Minecraft 玩家统计卡。
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import io
 import json
+import random
 import time
 import tomllib
 from dataclasses import dataclass, field
@@ -34,6 +37,7 @@ from PIL import Image, ImageDraw, ImageFont
 from Scripts import Globals
 from Scripts.Logging import logger
 from .HelpEntry import register_help_commands
+from .SkinRender import FACE_RECTS, POSES, render_character
 from .Watermark import apply_watermark
 
 CONFIG_PATH = Path('Data/MCStats.toml')
@@ -50,6 +54,9 @@ plan_server = ""
 [servers."生存服"]
 stats = "/mcstats/survival/stats"
 usercache = "/mcstats/survival/usercache.json"
+# SkinsRestorer 的皮肤库，用来给卡片渲染 3D 小人
+skins_players = "/mcskins/players"
+skins_library = "/mcskins/skins"
 
 # 想加更多服就照抄一段，路径按实际挂载改：
 # [servers."机械动力服"]
@@ -88,6 +95,8 @@ class Profile:
     name: str
     stats_dir: Path | None = None
     usercache: Path | None = None
+    skins_players: Path | None = None
+    skins_library: Path | None = None
 
 
 @dataclass(slots=True)
@@ -105,6 +114,7 @@ class PlayerStats:
 
     name: str
     server: str
+    uuid: str = ''
     online: bool | None = None
     playtime_ms: int | None = None
     active_ms: int | None = None
@@ -145,10 +155,14 @@ def load_settings() -> Settings:
             continue
         stats_dir = str(item.get('stats') or '').strip()
         usercache = str(item.get('usercache') or '').strip()
+        skins_players = str(item.get('skins_players') or '').strip()
+        skins_library = str(item.get('skins_library') or '').strip()
         servers[str(name)] = Profile(
             name=str(name),
             stats_dir=Path(stats_dir) if stats_dir else None,
             usercache=Path(usercache) if usercache else None,
+            skins_players=Path(skins_players) if skins_players else None,
+            skins_library=Path(skins_library) if skins_library else None,
         )
     return Settings(
         plan_api=str(data.get('plan_api') or '').strip().rstrip('/'),
@@ -283,7 +297,11 @@ def collect_stats(profile: Profile, player: str) -> PlayerStats:
     """
     mapping, display = _read_usercache(profile.usercache)
     uuid = mapping.get(player.casefold())
-    stats = PlayerStats(name=display.get(uuid, player) if uuid else player, server=profile.name)
+    stats = PlayerStats(
+        name=display.get(uuid, player) if uuid else player,
+        server=profile.name,
+        uuid=uuid or '',
+    )
     if not uuid or not profile.stats_dir:
         return stats
 
@@ -411,7 +429,116 @@ def format_count(value: int | None) -> str:
     return '—' if value is None else f'{value:,}'
 
 
-def build_card(stats: PlayerStats, font_path: Path | None = None) -> bytes:
+SKIN_SUFFIXES = ('.customskin', '.playerskin', '.urlskin')
+SKIN_DISK_DIR = Path('Data/SkinCache')
+SKIN_TIMEOUT = 6.0
+_skin_cache: dict[str, tuple[float, Image.Image | None, str]] = {}
+
+
+async def _download_texture(url: str) -> Image.Image | None:
+    """下载皮肤贴图，本地按 URL 哈希缓存一份。"""
+    name = hashlib.sha1(url.encode()).hexdigest()[:16] + '.png'
+    cached = SKIN_DISK_DIR / name
+    if cached.exists():
+        try:
+            with Image.open(cached) as image:
+                return image.copy()
+        except Exception:
+            cached.unlink(missing_ok=True)
+    try:
+        async with AsyncClient(timeout=SKIN_TIMEOUT) as client:
+            response = await client.get(url)
+        if response.status_code != 200:
+            logger.debug(f'玩家统计：皮肤下载返回 {response.status_code}')
+            return None
+        raw = response.content
+        SKIN_DISK_DIR.mkdir(parents=True, exist_ok=True)
+        cached.write_bytes(raw)
+        with Image.open(io.BytesIO(raw)) as image:
+            return image.copy()
+    except Exception as error:
+        logger.debug(f'玩家统计：皮肤下载失败（{error}）')
+        return None
+
+
+def _read_textures(path: Path) -> tuple[str, str] | None:
+    """从 SkinsRestorer 的皮肤文件里取出贴图地址与模型（classic / slim）。"""
+    try:
+        value = json.loads(path.read_text('Utf-8')).get('value') or ''
+        textures = json.loads(base64.b64decode(value))
+        skin = textures['textures']['SKIN']
+        model = str((skin.get('metadata') or {}).get('model') or 'classic').lower()
+        return skin['url'], model
+    except Exception as error:
+        logger.debug(f'玩家统计：解析皮肤文件失败（{error}）')
+        return None
+
+
+async def fetch_skin(profile: Profile, uuid: str) -> tuple[Image.Image, str] | None:
+    """按 UUID 从 SkinsRestorer 的皮肤库取一张皮肤，取不到返回 None。"""
+    if not uuid or not profile.skins_players or not profile.skins_library:
+        return None
+    player_file = profile.skins_players / f'{uuid}.player'
+    try:
+        mtime = player_file.stat().st_mtime
+    except OSError:
+        return None
+    cached = _skin_cache.get(uuid)
+    if cached and cached[0] == mtime:
+        return cached[1]
+
+    identifier = ''
+    try:
+        history = json.loads(player_file.read_text('Utf-8')).get('history') or []
+        if history:
+            identifier = str((history[-1].get('skinIdentifier') or {}).get('identifier') or '')
+    except Exception as error:
+        logger.debug(f'玩家统计：读取 {player_file.name} 失败（{error}）')
+
+    result = None
+    for suffix in SKIN_SUFFIXES:
+        path = profile.skins_library / f'{identifier}{suffix}'
+        if not identifier or not path.exists():
+            continue
+        info = _read_textures(path)
+        if not info:
+            continue
+        image = await _download_texture(info[0])
+        if image is not None:
+            result = (image, info[1])
+            break
+
+    _skin_cache[uuid] = (mtime, result)
+    return result
+
+
+_fallback: Image.Image | None = None
+
+
+def fallback_skin() -> Image.Image:
+    """没有皮肤数据时用一张自绘的默认皮肤（游戏里没设皮肤也是这个样子）。"""
+    global _fallback
+    if _fallback is not None:
+        return _fallback
+    skin = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(skin)
+    colors = {
+        'head': (198, 148, 106, 255),
+        'body': (0, 150, 150, 255),
+        'right_arm': (198, 148, 106, 255),
+        'left_arm': (198, 148, 106, 255),
+        'right_leg': (60, 60, 150, 255),
+        'left_leg': (60, 60, 150, 255),
+    }
+    for part, rects in FACE_RECTS.items():
+        for rect in rects.values():
+            draw.rectangle((rect[0], rect[1], rect[2] - 1, rect[3] - 1), fill=colors[part])
+    draw.rectangle(FACE_RECTS['head']['top'], fill=(70, 45, 28, 255))
+    _fallback = skin
+    return skin
+
+
+def build_card(stats: PlayerStats, skin: tuple[Image.Image, str] | None = None) -> bytes:
     """画一张统计卡片，返回 PNG 字节。"""
     rows = [
         ('在线时长', format_duration(stats.playtime_ms)),
@@ -423,9 +550,31 @@ def build_card(stats: PlayerStats, font_path: Path | None = None) -> bytes:
         ('击杀生物', format_count(stats.mob_kills)),
         ('死亡次数', format_count(stats.deaths)),
     ]
-    plan_missing = stats.playtime_ms is None
+
+    # 随机姿势 + 随机朝向，每次查询都有点新鲜感
+    character = None
+    image, model = skin if skin is not None else (fallback_skin(), 'classic')
+    pose = POSES[random.choice(list(POSES))]
+    yaw = random.uniform(-0.35, 0.55)
+    try:
+        character = render_character(image, model=model, ppu=8, yaw=yaw, pose=pose)
+    except Exception as error:
+        logger.debug(f'玩家统计：3D 渲染失败（{error}）')
+
+    char_column = 220 if character is not None else 0
+    # 张开手臂的姿势会比站立宽很多，超宽就等比缩回列宽内
+    if character is not None and character.width > char_column - 12:
+        ratio = (char_column - 12) / character.width
+        character = character.resize(
+            (max(1, int(character.width * ratio)), max(1, int(character.height * ratio))),
+            Image.Resampling.LANCZOS,
+        )
+
     width = CARD_WIDTH
-    height = 150 + ROW_HEIGHT * len(rows) + (96 if plan_missing else 74)
+    header_height = 128
+    rows_height = ROW_HEIGHT * len(rows)
+    body_height = max(rows_height, (character.height + 8) if character else 0)
+    height = header_height + body_height + PADDING - 4
 
     card = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(card)
@@ -435,50 +584,40 @@ def build_card(stats: PlayerStats, font_path: Path | None = None) -> bytes:
     tag_font = _font(18)
     row_font = _font(21)
     value_font = _font(21)
-    small_font = _font(15)
 
-    draw.text((PADDING, 28), stats.name, font=title_font, fill=(245, 245, 245, 255))
+    draw.text((PADDING, 26), stats.name, font=title_font, fill=(245, 245, 245, 255))
 
-    # 右上角的服务器标签
     tag = stats.server
     tag_width = draw.textlength(tag, font=tag_font)
     tag_x = width - PADDING - tag_width
     draw.rounded_rectangle(
-        (tag_x - 14, 34, tag_x + tag_width + 14, 66), radius=16, fill=(52, 54, 60, 255)
+        (tag_x - 14, 32, tag_x + tag_width + 14, 64), radius=16, fill=(52, 54, 60, 255)
     )
-    draw.text((tag_x, 40), tag, font=tag_font, fill=(210, 212, 216, 255))
+    draw.text((tag_x, 38), tag, font=tag_font, fill=(210, 212, 216, 255))
 
     state = '在线' if stats.online else ('离线' if stats.online is False else '状态未知')
-    draw.text((PADDING, 78), f'Minecraft 玩家统计 · {state}', font=tag_font, fill=(150, 152, 156, 255))
+    draw.text((PADDING, 76), f'Minecraft 玩家统计 · {state}', font=tag_font, fill=(150, 152, 156, 255))
+    draw.line((PADDING, 110, width - PADDING, 110), fill=(54, 56, 62, 255), width=1)
 
-    top = 128
-    draw.line((PADDING, top - 18, width - PADDING, top - 18), fill=(54, 56, 62, 255), width=1)
+    rows_x = PADDING + char_column
+    rows_width = width - rows_x - PADDING
+    if character is not None:
+        char_x = PADDING + (char_column - character.width) // 2
+        char_y = header_height + (body_height - character.height) // 2
+        card.alpha_composite(character, (char_x, max(header_height, char_y)))
 
     for index, (label, value) in enumerate(rows):
-        y = top + index * ROW_HEIGHT
+        y = header_height + index * ROW_HEIGHT
         if index % 2 == 0:
             draw.rounded_rectangle(
-                (PADDING - 12, y - 6, width - PADDING + 12, y + ROW_HEIGHT - 12),
+                (rows_x - 12, y - 6, rows_x + rows_width + 12, y + ROW_HEIGHT - 12),
                 radius=10,
                 fill=(38, 40, 44, 255),
             )
-        draw.text((PADDING, y), label, font=row_font, fill=(160, 162, 168, 255))
+        draw.text((rows_x, y), label, font=row_font, fill=(160, 162, 168, 255))
         value_width = draw.textlength(value, font=value_font)
-        draw.text((width - PADDING - value_width, y), value, font=value_font, fill=(238, 240, 244, 255))
-
-    footnote_y = top + ROW_HEIGHT * len(rows) + 14
-    draw.text(
-        (PADDING, footnote_y),
-        '数据：原版统计；「约计放置」= 使用方块类物品的次数',
-        font=small_font,
-        fill=(110, 112, 118, 255),
-    )
-    if plan_missing:
         draw.text(
-            (PADDING, footnote_y + 22),
-            '在线 / 活跃 / 挂机来自 Plan，只统计安装之后的游玩时间',
-            font=small_font,
-            fill=(110, 112, 118, 255),
+            (rows_x + rows_width - value_width, y), value, font=value_font, fill=(238, 240, 244, 255)
         )
 
     buffer = io.BytesIO()
@@ -557,9 +696,10 @@ async def handle_stats(event: MessageEvent, args: Message = CommandArg()):
             f'在「{profile.name}」里没有找到玩家 {target} 的记录。\n'
             f'可能是名字拼错，或者他从没在这个服玩过。（可查询的服：{"、".join(names)}）'
         )
+    skin = await fetch_skin(profile, stats.uuid)
     card = None
     try:
-        card = build_card(stats)
+        card = build_card(stats, skin)
     except Exception as error:
         # finish() 会抛控制流异常，绝不能放在 try 里
         logger.warning(f'玩家统计：卡片渲染失败（{error}），改发文字。')

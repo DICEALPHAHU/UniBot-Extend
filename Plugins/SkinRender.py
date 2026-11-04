@@ -31,6 +31,38 @@ PARTS = (
     ('left_leg', (-4, 0, -2), (4, 12, 4), 0.25),
 )
 
+# 各部件旋转支点（肩膀 / 胯部 / 脖子），用于摆姿势
+PART_PIVOTS = {
+    'head': (0.0, 24.0, 0.0),
+    'body': (0.0, 12.0, 0.0),
+    'right_arm': (6.0, 24.0, 0.0),
+    'left_arm': (-6.0, 24.0, 0.0),
+    'right_leg': (2.0, 12.0, 0.0),
+    'left_leg': (-2.0, 12.0, 0.0),
+}
+
+# 预设姿势：部件 -> [(旋转轴, 弧度)]，绕各自支点旋转
+POSES = {
+    'stand': {},
+    'wave': {'right_arm': [('z', 2.6)], 'head': [('y', -0.2), ('z', -0.08)]},
+    'cheer': {'right_arm': [('z', 2.5)], 'left_arm': [('z', -2.5)], 'head': [('x', -0.12)]},
+    'walk': {
+        'right_arm': [('x', 0.55)],
+        'left_arm': [('x', -0.45)],
+        'right_leg': [('x', -0.45)],
+        'left_leg': [('x', 0.4)],
+    },
+    'run': {
+        'right_arm': [('x', 1.15)],
+        'left_arm': [('x', -0.95)],
+        'right_leg': [('x', -0.85)],
+        'left_leg': [('x', 0.7)],
+        'head': [('x', -0.1)],
+    },
+    'point': {'right_arm': [('x', -1.45)], 'head': [('y', -0.15)]},
+    'think': {'right_arm': [('x', -1.2), ('z', 0.55)], 'head': [('x', 0.14)]},
+}
+
 # 每个面的明暗，模拟简单的方向光
 FACE_SHADE = {'front': 1.0, 'back': 0.86, 'right': 0.74, 'left': 0.74, 'top': 1.12}
 FACE_NORMALS = {
@@ -144,6 +176,26 @@ def _offset_rect(rect, offset):
     return (rect[0] + offset[0], rect[1] + offset[1], rect[2] + offset[0], rect[3] + offset[1])
 
 
+def _rotate_axis(vec, axis, angle):
+    """绕单轴旋转向量。"""
+    x, y, z = vec
+    c, s = np.cos(angle), np.sin(angle)
+    if axis == 'x':
+        return (x, y * c - z * s, y * s + z * c)
+    if axis == 'y':
+        return (x * c + z * s, y, -x * s + z * c)
+    return (x * c - y * s, x * s + y * c, z)
+
+
+def _apply_pose(point, pivot, rotations):
+    """把一个点绕某部件支点按姿势旋转。"""
+    px, py, pz = pivot
+    vec = (point[0] - px, point[1] - py, point[2] - pz)
+    for axis, angle in rotations:
+        vec = _rotate_axis(vec, axis, angle)
+    return (vec[0] + px, vec[1] + py, vec[2] + pz)
+
+
 def _rotate(vec, yaw):
     x, y, z = vec
     c, s = np.cos(yaw), np.sin(yaw)
@@ -190,13 +242,16 @@ def _face_geometry(pos, size, face):
     return (x1, y1, z0), (-w, 0, 0), (0, 0, d)  # top
 
 
-def _collect(camera: Camera, model: str, legacy: bool):
+def _collect(camera: Camera, model: str, legacy: bool, pose: dict | None = None):
     """收集所有可见面，按远到近排序。"""
     rects = dict(FACE_RECTS)
     if model == 'slim':
         rects.update(SLIM_RECTS)
     faces = []
+    pose = pose or {}
     for name, pos, size, inflate in PARTS:
+        rotations = pose.get(name) or ()
+        pivot = PART_PIVOTS[name]
         layers = ('base',) if legacy else ('base', 'outer')
         for layer in layers:
             if layer == 'outer':
@@ -208,12 +263,17 @@ def _collect(camera: Camera, model: str, legacy: bool):
                 off = (0, 0)
             for face in ('front', 'back', 'right', 'left', 'top'):
                 origin, uv, vv = _face_geometry(p, s, face)
-                center = tuple(origin[i] + (uv[i] + vv[i]) / 2 for i in range(3))
-                if not camera.visible(center, FACE_NORMALS[face]):
-                    continue
                 corners = [origin]
                 for coefs in ((1, 0), (1, 1), (0, 1)):
                     corners.append(tuple(origin[i] + coefs[0] * uv[i] + coefs[1] * vv[i] for i in range(3)))
+                normal = FACE_NORMALS[face]
+                if rotations:
+                    corners = [_apply_pose(corner, pivot, rotations) for corner in corners]
+                    for axis, angle in rotations:
+                        normal = _rotate_axis(normal, axis, angle)
+                center = tuple(sum(corner[i] for corner in corners) / 4 for i in range(3))
+                if not camera.visible(center, normal):
+                    continue
                 projected = [camera.project(corner) for corner in corners]
                 depth = sum(point[2] for point in projected) / 4
                 faces.append((depth, projected, _offset_rect(rects[name][face], off), face))
@@ -270,12 +330,16 @@ def render_character(
     back: bool = False,
     ppu: int = PPU,
     yaw: float = VIEW_YAW,
+    pose: dict | None = None,
 ) -> Image.Image:
-    """把皮肤渲染成有厚度的正面（back=True 时背面）视图，透明背景。"""
+    """把皮肤渲染成有厚度的正面（back=True 时背面）视图，透明背景。
+
+    ``pose`` 是 ``POSES`` 里的一种（部件 -> 旋转列表），不传就是站立。
+    """
     skin, legacy = prepare_skin(skin)
     angle = yaw + (np.pi if back else 0.0)
     camera = Camera(yaw=angle)
-    faces = _collect(camera, model, legacy)
+    faces = _collect(camera, model, legacy, pose)
 
     points = [corner for _, quad, _, _ in faces for corner in quad]
     min_x = min(point[0] for point in points)

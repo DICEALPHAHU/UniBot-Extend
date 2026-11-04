@@ -250,6 +250,10 @@
 | 合成物品 | `stats/crafted` 求和 | 全历史精确 |
 | 击杀生物 / 死亡次数 | `custom.mob_kills` / `custom.deaths` | 精确 |
 
+**卡片**：左侧是按玩家皮肤渲染的 3D 小人，每次随机一种姿势（站立 / 挥手 / 欢呼 / 走路 / 奔跑 / 指路 / 思考）和朝向。
+皮肤从 SkinsRestorer 的本地库取（`players/<uuid>.player` → `skins/<id>.customskin|playerskin|urlskin` → 贴图 URL），
+取不到就退回内置的默认皮肤。渲染失败或没有皮肤库时自动退回纯列表布局。
+
 **实现要点**：
 
 - 名字 → UUID 走服务器的 `usercache.json`，显示用里面的官方大小写
@@ -264,7 +268,8 @@
 -v /srv/mc/purpur/usercache.json:/mcstats/survival/usercache.json:ro
 ```
 
-`Data/MCStats.toml` 里配 `plan_api`、每个服的 `stats` / `usercache`，加服照抄一段即可；改完发 `/统计重载`。
+`Data/MCStats.toml` 里配 `plan_api`、每个服的 `stats` / `usercache` / `skins_players` / `skins_library`，
+加服照抄一段即可；改完发 `/统计重载`。
 
 ### 13. 图片水印
 
