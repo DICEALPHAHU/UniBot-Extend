@@ -82,6 +82,10 @@ plugins = [
     { module_name = "Plugins.Motou", enabled = true },
     { module_name = "Plugins.Poke", enabled = true },
     { module_name = "Plugins.Guessnum", enabled = true },
+    # 关键词自动回复（Plugins/KeywordReply.py）：词库在 Data/KeywordReply.toml
+    { module_name = "Plugins.KeywordReply", enabled = true },
+    # 入群欢迎（Plugins/Welcome.py）：文案在 Data/Welcome.toml
+    { module_name = "Plugins.Welcome", enabled = true },
     { module_name = "Plugins.Kebiao", enabled = false },
     { module_name = "Plugins.EventFilter", enabled = true },
 ]
