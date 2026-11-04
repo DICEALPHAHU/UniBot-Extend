@@ -752,7 +752,9 @@ def build_text(stats: PlayerStats) -> str:
 
 # ===== 指令 =====
 
-stats_cmd = on_command('stats', aliases={'统计', 'mystats'}, priority=0, block=True)
+stats_cmd = on_command(
+    'stats', aliases={'stat', 'stats卡', '统计', '数据', 'mystats'}, priority=0, block=True
+)
 
 
 def _bound_player(user_id: str) -> str | None:
