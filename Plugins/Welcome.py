@@ -114,11 +114,14 @@ def load_settings() -> WelcomeSettings:
         except OSError as error:
             logger.warning(f'入群欢迎：示例配置写入失败（{error}），本次不启用。')
             return WelcomeSettings(enabled=False)
+    global _last_error
     try:
         data = tomllib.loads(CONFIG_PATH.read_text('Utf-8'))
     except (OSError, tomllib.TOMLDecodeError) as error:
+        _last_error = str(error)
         logger.error(f'入群欢迎：配置读取失败（{error}），本次不启用。')
         return WelcomeSettings(enabled=False)
+    _last_error = ''
 
     default = _block(
         {
@@ -140,6 +143,7 @@ def load_settings() -> WelcomeSettings:
     )
 
 
+_last_error = ''
 _settings = WelcomeSettings(enabled=False)
 _mtime: float | None = None
 _loaded = False
@@ -279,7 +283,10 @@ async def handle_reload():
     """手动重新读取配置文件。"""
     settings = refresh(force=True)
     state = '启用' if settings.enabled else '关闭'
-    await reload_command.finish(f'已重新加载入群欢迎配置（{state}）。')
+    text = f'已重新加载入群欢迎配置（{state}）。'
+    if _last_error:
+        text += f'\n配置有语法错误，已忽略：{_last_error}'
+    await reload_command.finish(text)
 
 
 __plugin_meta__ = PluginMetadata(

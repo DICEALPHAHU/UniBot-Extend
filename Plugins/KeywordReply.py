@@ -115,11 +115,14 @@ def load_rules() -> list[KeywordRule]:
         except OSError as error:
             logger.warning(f'关键词回复：示例配置写入失败（{error}），本次不启用。')
             return []
+    global _last_error
     try:
         data = tomllib.loads(CONFIG_PATH.read_text('Utf-8'))
     except (OSError, tomllib.TOMLDecodeError) as error:
+        _last_error = str(error)
         logger.error(f'关键词回复：配置读取失败（{error}），本次不启用。')
         return []
+    _last_error = ''
     if not data.get('enabled', True):
         return []
 
@@ -164,6 +167,7 @@ def load_rules() -> list[KeywordRule]:
     return rules
 
 
+_last_error = ''
 _rules: list[KeywordRule] = []
 _mtime: float | None = None
 _loaded = False
@@ -244,7 +248,10 @@ reload_command = on_command('关键词重载', aliases={'keywordreload'}, permis
 async def handle_reload():
     """手动重新读取配置文件。"""
     rules = refresh(force=True)
-    await reload_command.finish(f'已重新加载 {len(rules)} 条关键词规则。')
+    text = f'已重新加载 {len(rules)} 条关键词规则。'
+    if _last_error:
+        text += f'\n配置有语法错误，已忽略：{_last_error}'
+    await reload_command.finish(text)
 
 
 list_command = on_command('关键词列表', aliases={'keywordlist'}, permission=SUPERUSER, block=True, priority=0)
