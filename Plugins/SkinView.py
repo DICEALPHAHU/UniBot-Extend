@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 from Scripts.Logging import logger
@@ -21,6 +22,10 @@ VIEWER_PAGE = VIEWER_DIR / 'viewer.html'
 BUNDLE = VIEWER_DIR / 'skinview3d.bundle.js'
 CANVAS_SIZE = 420
 RENDER_TIMEOUT = 20.0
+# 闲置多久关掉浏览器（秒）与检查间隔：一个 Chromium 实例常驻要 200MB 上下，
+# 而 /stats、/player 一天也未必用几次，空闲时没必要占着。
+IDLE_TIMEOUT = 300.0
+IDLE_CHECK_INTERVAL = 60.0
 
 # 姿势表：要么用 skinview3d 自带动画（幅度自然），要么手摆关节（注意旋转轴是
 # three.js 的本地坐标，手臂竖直向下是 0，绕 z 转到 3.9 左右才是举手）。
@@ -70,6 +75,8 @@ _browser = None
 _playwright = None
 _page = None
 _ready = False
+_last_used = 0.0
+_reaper: asyncio.Task | None = None
 _lock = asyncio.Lock()
 
 
@@ -149,6 +156,29 @@ async def _park() -> None:
         _page = None
 
 
+def _start_reaper() -> None:
+    """确保闲置回收任务在跑（首次渲染时启动，之后一直复用）。"""
+    global _reaper
+    if _reaper is None or _reaper.done():
+        _reaper = asyncio.create_task(_reap_loop())
+
+
+async def _reap_loop() -> None:
+    """闲置超过 IDLE_TIMEOUT 就关掉浏览器，下次渲染再冷启动。"""
+    while True:
+        await asyncio.sleep(IDLE_CHECK_INTERVAL)
+        if _browser is None or _lock.locked():
+            continue
+        if time.monotonic() - _last_used < IDLE_TIMEOUT:
+            continue
+        async with _lock:
+            # 拿到锁后再确认一次：期间可能刚来了一个渲染请求
+            if _browser is None or time.monotonic() - _last_used < IDLE_TIMEOUT:
+                continue
+            await _drop_browser()
+        logger.info(f'玩家统计：渲染浏览器闲置 {IDLE_TIMEOUT / 60:.0f} 分钟，已释放内存。')
+
+
 def pose_spec(name: str) -> dict:
     """把姿势名转成 viewer 认识的 spec。"""
     if name in POSES:
@@ -166,6 +196,7 @@ async def render(
     delay_ms: int | None = None,
 ) -> bytes | None:
     """渲染一张透明背景的皮肤立绘（PNG 字节）；失败返回 None。"""
+    global _last_used
     if not available():
         return None
     if not skin:
@@ -180,6 +211,8 @@ async def render(
         import random as _random
         delay_ms = _random.randint(low, high)
     async with _lock:
+        _last_used = time.monotonic()
+        _start_reaper()
         try:
             page = await _ensure_page()
             await asyncio.wait_for(
@@ -212,5 +245,15 @@ async def render(
 
 
 async def close() -> None:
-    """关闭浏览器（退出时调用）。"""
+    """关闭浏览器并停掉闲置回收任务（退出时调用）。"""
+    global _reaper
+    if _reaper is not None:
+        _reaper.cancel()
+        try:
+            await _reaper
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        _reaper = None
     await _drop_browser()
