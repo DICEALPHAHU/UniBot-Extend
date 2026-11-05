@@ -4,8 +4,9 @@
 配置文件：``Data/KeywordReply.toml``（首次启动自动生成带注释的示例）。
 文件改动后自动重载（比较修改时间），也可以用 ``/关键词重载`` 手动刷新。
 
-注意 priority=0：``Scripts.Plugins.Events`` 在 priority=1 以 block=True 截断群消息，
-priority 更大就永远收不到消息。命中关键词才 ``finish`` 拦截，其余消息原样放行。
+注意 priority=0 且 **不能 block**：``Scripts.Plugins.Events``（群消息 ↔ 游戏内互转）
+在 priority=1，如果这里 block=True，所有群消息都会在这一层被截断，游戏里再也收不到
+群消息。命中关键词时用 ``finish`` 中断，未命中的消息原样放行。
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from nonebot import on_command, on_message
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
+from nonebot.adapters.onebot.v11 import Message, MessageEvent, MessageSegment
 from nonebot.permission import SUPERUSER
 from nonebot.plugin import PluginMetadata
 
@@ -203,12 +204,16 @@ def _configured_group_ids() -> set[str]:
     return ids
 
 
-keyword_watcher = on_message(priority=0, block=True)
+keyword_watcher = on_message(priority=0, block=False)
 
 
 @keyword_watcher.handle()
-async def handle_keyword(event: GroupMessageEvent):
-    """命中关键词就回复并拦截事件，否则立即放行。"""
+async def handle_keyword(event: MessageEvent):
+    """命中关键词就回复并中断事件链，否则立即放行给后面的 matcher。"""
+    group_id = getattr(event, 'group_id', None)
+    if group_id is None:
+        # 私聊、游戏内聊天等不是群消息，跳过
+        return
     text = event.get_plaintext().strip()
     if not text:
         return
@@ -216,7 +221,7 @@ async def handle_keyword(event: GroupMessageEvent):
     if any(text.startswith(prefix) for prefix in config.command_start):
         return
 
-    group_id = str(event.group_id)
+    group_id = str(group_id)
     allowed_groups = _configured_group_ids()
 
     now = time.time()
@@ -234,7 +239,7 @@ async def handle_keyword(event: GroupMessageEvent):
         _last_fire[key] = now
         message = Message()
         if rule.at:
-            message += MessageSegment.at(event.user_id)
+            message += MessageSegment.at(getattr(event, 'user_id', 0))
             message += MessageSegment.text(' ')
         message += MessageSegment.text(rule.reply)
         logger.info(f'关键词回复：群 {group_id} 命中规则 #{rule.index}（{rule.keywords[0]}）')
