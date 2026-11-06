@@ -58,7 +58,10 @@ class Config(BaseModel):
     # QQ/NapCat 抽取的封面才不会是一片黑。
     bili_trim_black_enabled: bool = True
 
-    # 黑场判定：亮度低于该值(0-255)且持续超过 bili_black_min_duration 秒，视为黑场
+    # 黑场判定：blackdetect 的 pix_th 是「亮度比例」，取值 0~1，不是 0~255 的亮度值。
+    # 0.10 约等于亮度 25/255。历史上这里被当成 0~255 写过（例如填 16），ffmpeg 会直接
+    # 报参数越界并以返回码 222 退出，黑场探测于是次次失败、裁切被静默跳过。
+    # 代码里对 >1 的值会自动除以 255 兼容，但新配置请直接写比例。
     bili_black_pixel_threshold: float = 0.10
     bili_black_min_duration: float = 0.3
 

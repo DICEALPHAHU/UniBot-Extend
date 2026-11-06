@@ -122,7 +122,25 @@ BILI_VIDEO_NORMALIZE_MAX_SECONDS = plugin_config.bili_video_normalize_max_min * 
 # ffmpeg：用于裁掉视频开头的黑场淡入（QQ/NapCat 抽第 0 帧当封面，黑场会导致封面全黑）
 FFMPEG_CONFIGURED_PATH = (plugin_config.bili_ffmpeg_path or '').strip()
 TRIM_BLACK_ENABLED = plugin_config.bili_trim_black_enabled
-BLACK_PIXEL_THRESHOLD = plugin_config.bili_black_pixel_threshold
+
+
+def _normalize_pixel_threshold(value) -> float:
+    """把 pix_th 归一成 blackdetect 要求的 0~1 比例。
+
+    blackdetect 的 pix_th 是亮度比例，只接受 0~1；填 16 会让 ffmpeg 直接报
+    「Value 16.000000 for parameter 'pix_th' out of range」并以返回码 222 退出，
+    表现为黑场探测每次都失败、裁切被静默跳过。这里兼容历史配置里 0~255 的写法。
+    """
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 0.10
+    if value > 1:
+        value = value / 255
+    return min(max(value, 0.0), 1.0)
+
+
+BLACK_PIXEL_THRESHOLD = _normalize_pixel_threshold(plugin_config.bili_black_pixel_threshold)
 BLACK_MIN_DURATION = plugin_config.bili_black_min_duration
 MAX_TRIM_SECONDS = plugin_config.bili_max_trim_seconds
 MAX_PROCESS_SECONDS = plugin_config.bili_max_process_minutes * 60
@@ -894,6 +912,9 @@ async def detect_leading_black_seconds(video_path: Path) -> float | None:
         return None
     code, output = await run_ffmpeg(args, timeout=120.0)
     if code != 0:
+        # 把 ffmpeg 的报错带出来：参数写错（例如 pix_th 填了 0~255 的亮度值）
+        # 只表现为「探测失败」，不打印原因根本没法排查
+        logger.warning(f'黑场探测的 ffmpeg 调用失败（返回码 {code}）：{output[-200:].strip()}')
         return None
     # 典型输出：black_start:0 black_end:0.5 black_duration:0.5
     match = re.search(
