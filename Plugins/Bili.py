@@ -575,9 +575,39 @@ async def _mux_av(video_path: Path, audio_path: Path) -> Path | None:
     return merged
 
 
-async def download_bilibili_video(bv_id: str) -> Path | None:
+async def download_bilibili_video(bv_id: str, *, attempts: int = 3) -> Path | None:
     """
     下载 B 站视频为本地 mp4 文件，返回文件路径（失败返回 None）。
+
+    带重试：B 站接口偶发连接不上（本机没有 IPv6 路由，而 api.bilibili.com
+    会解析出 AAAA 记录），一次抖动就退回「只发快照」太亏，所以失败后
+    隔几秒重试，最多 attempts 次。体积超限这类确定性失败由单次实现内部
+    直接返回 None，不在这里重复消耗。
+    """
+    if not is_valid_bvid(bv_id):
+        logger.error(f'BV 号无效，无法下载：{bv_id!r}（BV 号不含小写 l / 大写 I，注意 1 与 l 易混）')
+        return None
+    for attempt in range(1, attempts + 1):
+        try:
+            path = await _download_bilibili_video_once(bv_id)
+        except Exception as error:
+            # 单次实现内部已兜住大多数异常，这里再兜一层，
+            # 避免某个漏网的异常把整个监控循环带崩
+            path = None
+            logger.warning(f'下载视频异常（第 {attempt}/{attempts} 次）：{error}')
+        if path is not None:
+            return path
+        if attempt < attempts:
+            delay = 2 * attempt
+            logger.warning(f'视频下载失败，{delay} 秒后重试（第 {attempt}/{attempts} 次）')
+            await asyncio.sleep(delay)
+    logger.error(f'视频下载重试 {attempts} 次仍失败，本次只能发快照：{bv_id}')
+    return None
+
+
+async def _download_bilibili_video_once(bv_id: str) -> Path | None:
+    """
+    单次下载尝试，返回文件路径（失败返回 None）。
 
     匿名请求时 B 站返回已合流的 MP4（自带音频）；带上登录凭证后返回的是
     DASH 流（视频、音频分开），这时必须把音轨下载下来再合流，
@@ -1151,6 +1181,24 @@ def _get_onebot_bot():
     return None
 
 
+async def _wait_for_bot(max_retry: int = 3, retry_interval: int = 10):
+    """等待 OneBot 连接就绪，返回 bot 或 None。
+
+    重启容器后 NapCat 的反向 WS 要几秒才连上，这段时间 get_bots() 里没有
+    可用的 Bot。过去下载在等连接之前就开始了，等真正要发视频时 Bot 还没上线，
+    于是静默跳过视频、只在事后补发快照，日志里连一句原因都没有。
+    """
+    for attempt in range(1, max_retry + 1):
+        bot = _get_onebot_bot()
+        if bot is not None:
+            return bot
+        if attempt < max_retry:
+            logger.warning(f'OneBot Bot 尚未连接，{retry_interval} 秒后重试（第 {attempt}/{max_retry} 次）')
+            await asyncio.sleep(retry_interval)
+    logger.error('等待 OneBot Bot 连接超时，本次视频发送会被跳过')
+    return None
+
+
 async def _push_to_groups(message: Message, title: str, bvid: str, max_retry: int, retry_interval: int) -> bool:
     """把消息推送到全部群，带重试（至少一个群成功即视为成功）。"""
     retry_count = 0
@@ -1206,14 +1254,18 @@ async def push_new_video(video_data: dict, max_retry: int = 3, retry_interval: i
         # 1. 先获取UP主昵称
         up_nickname = await get_up_nickname(BILI_UP_UID)
 
-        # 2. 下载视频（超过体积上限时 download_bilibili_video 返回 None）
+        # 2. 先确认有可用的 Bot 连接再下载：没有连接时下载只是白费带宽，
+        #    而且后续发送会被静默跳过，只剩一句「仅快照」看不出原因。
+        bot = await _wait_for_bot(max_retry, retry_interval)
+
+        # 3. 下载视频（超过体积上限时 download_bilibili_video 返回 None）
         bv_match = BV_PATTERN.search(video_url)
         video_path = await download_bilibili_video(bv_match.group()) if bv_match else None
-        # 2b. 裁掉开头黑场（QQ/NapCat 抽第 0 帧当封面，黑场会导致封面全黑）
+        # 4. 裁掉开头黑场（QQ/NapCat 抽第 0 帧当封面，黑场会导致封面全黑）
         if video_path is not None:
             video_path = await process_video_or_original(video_path)
 
-        # 2c. 重编码后体积不可控，再校验一次上限；超了就当没有视频
+        # 5. 重编码后体积不可控，再校验一次上限；超了就当没有视频
         if video_path is not None:
             size_bytes = video_path.stat().st_size
             if size_bytes > BILI_VIDEO_MAX_BYTES:
@@ -1224,14 +1276,17 @@ async def push_new_video(video_data: dict, max_retry: int = 3, retry_interval: i
                 video_path.unlink(missing_ok=True)
                 video_path = None
 
-        # 3. 尝试把视频本体发到所有群
+        # 6. 尝试把视频本体发到所有群
         # 文件名需要「B站原标题」，push_new_video 的调用方（后台监控 uapis 接口）不带标题，
         # 这里按 bvid 补一次；取不到时回退为 BV 号，不影响发送。
         video_title = await get_video_title(bvid) if bvid else bvid
         video_sent = False
         if video_path is not None:
-            bot = _get_onebot_bot()
-            if bot is not None:
+            # 下载期间连接可能断过，这里再取一次最新的
+            bot = _get_onebot_bot() or bot
+            if bot is None:
+                logger.warning('没有可用的 OneBot 连接，本次跳过视频发送，只发快照')
+            else:
                 try:
                     for group_info in MESSAGE_GROUPS:
                         await _send_video_to_group(bot, group_info, video_path, video_title, bvid)
@@ -1241,7 +1296,7 @@ async def push_new_video(video_data: dict, max_retry: int = 3, retry_interval: i
         if video_path is not None and video_path.exists():
             video_path.unlink(missing_ok=True)
 
-        # 4. 组装通知文案
+        # 7. 组装通知文案
         msg = Message()
         msg += MessageSegment.text(f'订阅的UP主【{up_nickname}】动态更新啦！\n')
         msg += MessageSegment.text(f'标题：{title}\n')
@@ -1253,7 +1308,7 @@ async def push_new_video(video_data: dict, max_retry: int = 3, retry_interval: i
                 logger.success(f'新视频推送完成（含视频）：{title} ({bvid})')
             return
 
-        # 5. 退回只发快照，并说明原因
+        # 8. 退回只发快照，并说明原因
         if video_path is None:
             reason = f'视频超过 {BILI_VIDEO_MAX_MB}MB 上限或下载失败'
         else:
