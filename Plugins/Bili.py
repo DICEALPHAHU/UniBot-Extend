@@ -71,6 +71,29 @@ FRAME_DIR = TEMP_ROOT / 'Bili' / 'frames'  # 视频帧目录
 for dir_path in [CACHE_FILE.parent, VIDEO_DIR, FRAME_DIR]:
     dir_path.mkdir(parents=True, exist_ok=True)
 
+
+def _check_temp_writable() -> None:
+    """启动时探一次写权限。
+
+    这些目录一旦被别的用户带走（例如有人对 /srv 做过 chown -R），
+    机器人只能读不能写，问题要拖到用户发 /bv、或者监控每 5 分钟报一次错才暴露，
+    而且日志里只有一句 Permission denied，看不出是哪个环节要改什么。
+    """
+    for directory in (CACHE_FILE.parent, VIDEO_DIR, FRAME_DIR):
+        probe = directory / '.write_probe'
+        try:
+            probe.write_bytes(b'')
+            probe.unlink()
+        except OSError as error:
+            logger.error(
+                f'B 站临时目录不可写：{directory}（{error}）——'
+                f'当前 uid={os.getuid()}，/bv 与 B 站监控都无法下载视频，'
+                f'请检查 {TEMP_ROOT} 的所有者与权限'
+            )
+
+
+_check_temp_writable()
+
 # 将项目根目录加入 Python 路径（确保导入正常）
 sys.path.insert(0, str(TEMP_ROOT))
 
@@ -612,6 +635,13 @@ async def download_bilibili_video(bv_id: str) -> Path | None:
         return video_path
     except Exception as e:
         logger.error(f'下载视频失败：{e}')
+        if isinstance(e, PermissionError):
+            # 权限问题往往在「目录被别的用户 chown 走」之后悄悄出现，
+            # 表面只是 /bv 发不出视频，日志里要翻很久才看得出根因
+            logger.error(
+                f'（{TEMP_ROOT} 对当前进程不可写：uid={os.getuid()}，'
+                f'检查共享目录的所有者与权限）'
+            )
         if video_path.exists():
             video_path.unlink(missing_ok=True)
         return None
