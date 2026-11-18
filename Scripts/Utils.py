@@ -107,7 +107,10 @@ async def send_message_to_groups(message: str) -> bool:
             if not separator or not group_id:
                 logger.warning(f'Invalid message group config: {group_info}')
                 continue
-            scope = getattr(AlconnaSupportScope, platform.lower(), None)
+            # QQ 官方适配器在 uniseg 里的 scope 名是 qq_api，配置里常写成 qq
+            _alias = {'qq': 'qq_api', 'qqclient': 'qq_client'}
+            _name = _alias.get(platform.lower(), platform.lower())
+            scope = getattr(AlconnaSupportScope, _name, None)
             if scope is None:
                 logger.warning(f'Unsupported platform type: {platform}, please check the config file.')
                 continue

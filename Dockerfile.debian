@@ -21,6 +21,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    UV_CACHE_DIR=/app/.cache/uv \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
 
@@ -45,6 +46,11 @@ COPY --chown=worker:worker . /app/
 # 运行期需要可写的目录（镜像里没有，运行时创建会因权限失败）
 RUN mkdir -p /app/Logs /app/Temp /app/WebUi /app/napcat/config/unibot-temp \
     && chown -R worker:worker /app/Logs /app/Temp /app/WebUi /app/napcat
+
+# WebUI 的「安装适配器」按钮会在 /app 下以 uv 改写 pyproject.toml 并建临时文件，
+# 因此 /app 本身必须对 worker 可写；uv 缓存目录同理（默认 ~/.cache/uv 在容器里不存在）。
+RUN mkdir -p /home/worker/.cache/uv /app/.cache/uv \
+    && chown -R worker:worker /app /home/worker
 
 # Playwright 客户端 + Chromium（图片渲染引擎依赖）
 RUN uv pip install --python /app/.venv/bin/python playwright \

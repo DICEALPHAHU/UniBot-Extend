@@ -5,10 +5,11 @@
 """
 
 from httpx import AsyncClient
-from nonebot import on_command
+from nonebot import on_command, on_message
+from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import Message, MessageEvent
-from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
+from Scripts.CommandRules import command_args, command_rule
 
 from .Config import plugin_config
 from .HelpEntry import register_help_commands
@@ -17,7 +18,7 @@ from .HelpEntry import register_help_commands
 WEATHER_API_URL = 'https://uapis.cn/api/v1/misc/weather'
 
 # priority=0：必须小于 Scripts.Plugins.Events 的 priority=1（它以 block=True 截断事件）。
-weather_cmd = on_command('weather', priority=0, block=True)
+weather_cmd = on_message(rule=command_rule(('weather',)), priority=0, block=True)
 
 
 async def fetch_weather_report(city_name: str) -> str:
@@ -79,7 +80,8 @@ async def fetch_weather_report(city_name: str) -> str:
 
 
 @weather_cmd.handle()
-async def handle_weather(event: MessageEvent, args: Message = CommandArg()):
+async def handle_weather(event: Event):
+    args = Message(command_args(event, ('weather',)))
     city_name = args.extract_plain_text().strip()
     if not city_name:
         await weather_cmd.finish('请输入城市名！示例：.weather 北京')

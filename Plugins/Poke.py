@@ -1,7 +1,11 @@
-"""
-群内「戳一戳」小功能。
+"""群内「戳一戳」小功能。
 
-触发方式：群内戳一戳机器人，随机回复一条 MC 冷知识。
+触发方式：
+- **OneBot/NapCat**：群内戳一戳机器人（notice.notify.poke）；
+- **QQ 官方机器人**：平台以 INTERACTION_CREATE(type=20) 推送，由 ``Plugins.QqPoke``
+  转成可处理事件。
+
+两条链路共用同一套冷知识逻辑，回复统一走 ``Scripts.Sender``。
 """
 
 import json
@@ -10,11 +14,12 @@ from datetime import datetime
 from pathlib import Path
 
 from nonebot import on_notice
-from nonebot.adapters.onebot.v11 import PokeNotifyEvent
+from nonebot.adapters import Event
 from nonebot.plugin import PluginMetadata
-from nonebot.rule import to_me
+from nonebot.rule import Rule
 
 from Scripts.Rules import message_group_rule
+from Scripts.Sender import get_user_id, send_group_text
 from Scripts.Utils import turn_message_text
 from .HelpEntry import register_help_commands
 
@@ -37,9 +42,6 @@ POKE_COOLDOWN_MSG = [
 # 冷知识数据文件路径
 MC_WIKI_PATH = Path(__file__).parent / 'WikiDatabase.json'
 
-matcher = on_notice(rule=message_group_rule & to_me(), priority=15, block=False)
-week_mapping = ('一', '二', '三', '四', '五', '六', '日')
-
 
 def load_wiki_data() -> list[dict]:
     """加载冷知识数据，文件缺失或格式错误时返回空列表。"""
@@ -57,24 +59,44 @@ def load_wiki_data() -> list[dict]:
 MC_WIKI_DATA = load_wiki_data()
 
 
-@matcher.handle()
-async def watch_poke(event: PokeNotifyEvent):
-    # 未戳到机器人则直接返回
-    if not event.is_tome():
-        return
+def _is_poke_event(event: Event) -> bool:
+    """识别两条链路的戳一戳事件，不写死具体适配器类型。"""
+    # 官方 QQ：由 Plugins.QqPoke 构造的事件
+    if hasattr(event, 'is_poke') and callable(getattr(event, 'is_poke')):
+        try:
+            return bool(event.is_poke())
+        except Exception:
+            return False
+    # OneBot：notice.notify.poke 且目标是自己
+    module = type(event).__module__
+    if module.startswith('nonebot.adapters.onebot.v11'):
+        if type(event).__name__ != 'PokeNotifyEvent':
+            return False
+        try:
+            return bool(event.is_tome())
+        except Exception:
+            return False
+    return False
 
-    # 冷却判断
+
+matcher = on_notice(rule=Rule(_is_poke_event), priority=15, block=False)
+
+
+@matcher.handle()
+async def watch_poke(bot, event: Event):
+    """被戳时回一条 MC 冷知识；官方 QQ 拿不到具体戳的人，因此不 @。"""
     global last_poke_time
-    current_time = event.time
+    # 冷却判断
+    current_time = getattr(event, 'time', None) or int(datetime.now().timestamp())
     if current_time - last_poke_time < POKE_COOLDOWN:
-        cool_msg = random.choice(POKE_COOLDOWN_MSG)
-        await matcher.finish(cool_msg, at_sender=True)
+        await send_group_text(bot, event, random.choice(POKE_COOLDOWN_MSG))
+        return
     last_poke_time = current_time
 
     # 从内存随机选择一条冷知识
     sentence = random.choice(MC_WIKI_DATA) if MC_WIKI_DATA else {}
     message = await turn_message_text(poke_handler(sentence))
-    await matcher.finish(message)
+    await send_group_text(bot, event, message)
 
 
 def poke_handler(sentence: dict):
@@ -88,9 +110,11 @@ def poke_handler(sentence: dict):
     yield f' —— {sentence["title"]}《{sentence["category"]}》'
 
 
+week_mapping = ('一', '二', '三', '四', '五', '六', '日')
+
 __plugin_meta__ = PluginMetadata(
     name='戳一戳',
     description='被戳一戳时随机回一句话',
     usage='（被动触发）在群里戳一戳机器人',
-    extra={'author': 'DICEALPHAHU', 'version': '1.0'},
+    extra={'author': 'DICEALPHAHU', 'version': '1.1'},
 )

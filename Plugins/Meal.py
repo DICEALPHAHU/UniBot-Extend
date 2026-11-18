@@ -9,7 +9,7 @@ import random
 from pathlib import Path
 
 from nonebot import on_message
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
+from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import Rule
 from .HelpEntry import register_help_commands
@@ -36,9 +36,13 @@ def is_ask_meal() -> Rule:
     """触发规则：群消息 + 早上/中午/晚上 + 吃什么。"""
 
     async def _rule(event) -> bool:
-        if not isinstance(event, GroupMessageEvent):
+        # 不写死适配器类型：有群标识即视为群消息（OneBot 的 group_id / 官方 QQ 的 group_openid）
+        if getattr(event, 'group_id', None) is None and getattr(event, 'group_openid', None) is None:
             return False
-        plain_text = event.get_plaintext().strip()
+        try:
+            plain_text = event.get_plaintext().strip()
+        except Exception:
+            return False
         return any(
             plain_text.startswith(period) and '吃什么' in plain_text
             for period in TIME_PERIODS
@@ -52,7 +56,7 @@ ask_meal = on_message(rule=is_ask_meal(), block=True, priority=0)
 
 
 @ask_meal.handle()
-async def handle_meal(event: GroupMessageEvent):
+async def handle_meal(event):
     # 提取触发时段
     plain_text = event.get_plaintext().strip()
     time_period = next(

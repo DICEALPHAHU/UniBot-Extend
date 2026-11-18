@@ -17,9 +17,11 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from nonebot import on_command, on_message
-from nonebot.adapters.onebot.v11 import Message, MessageEvent, MessageSegment
-from nonebot.permission import SUPERUSER
+from nonebot import on_message
+from nonebot.adapters import Event
+from nonebot.adapters.onebot.v11 import Message, MessageSegment
+
+from Scripts.CommandRules import command_rule, superuser_rule
 from nonebot.plugin import PluginMetadata
 
 from Scripts.Config import config
@@ -208,7 +210,7 @@ keyword_watcher = on_message(priority=0, block=False)
 
 
 @keyword_watcher.handle()
-async def handle_keyword(event: MessageEvent):
+async def handle_keyword(event: Event):
     """命中关键词就回复并中断事件链，否则立即放行给后面的 matcher。"""
     group_id = getattr(event, 'group_id', None)
     if group_id is None:
@@ -246,7 +248,9 @@ async def handle_keyword(event: MessageEvent):
         await keyword_watcher.finish(message)
 
 
-reload_command = on_command('关键词重载', aliases={'keywordreload'}, permission=SUPERUSER, block=True, priority=0)
+reload_command = on_message(
+    rule=command_rule(('关键词重载',), ('keywordreload',)) & superuser_rule(), block=True, priority=0
+)
 
 
 @reload_command.handle()
@@ -259,7 +263,9 @@ async def handle_reload():
     await reload_command.finish(text)
 
 
-list_command = on_command('关键词列表', aliases={'keywordlist'}, permission=SUPERUSER, block=True, priority=0)
+list_command = on_message(
+    rule=command_rule(('关键词列表',), ('keywordlist',)) & superuser_rule(), block=True, priority=0
+)
 
 
 @list_command.handle()

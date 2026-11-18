@@ -24,6 +24,7 @@ dependencies = [
     "xlrd>=2.0.1",
     "openpyxl>=3.1.0",
     "Pillow>=10.0.0",
+    "nonebot-adapter-qq>=1.7.4",
 ]
 
 [project.optional-dependencies]
@@ -34,7 +35,9 @@ webui = [
     "cryptography>=43.0.3,<49.0.0",
     "qrcode[pil]>=7.4",
 ]
-extensions = []
+extensions = [
+    "httpx>=0.28.1",
+]
 
 [dependency-groups]
 dev = [
@@ -81,6 +84,7 @@ plugins = [
     { module_name = "Plugins.Lots", enabled = true },
     { module_name = "Plugins.Motou", enabled = true },
     { module_name = "Plugins.Poke", enabled = true },
+    { module_name = "Plugins.QqPoke", enabled = true },
     { module_name = "Plugins.Guessnum", enabled = true },
     # 关键词自动回复（Plugins/KeywordReply.py）：词库在 Data/KeywordReply.toml
     { module_name = "Plugins.KeywordReply", enabled = true },
@@ -88,13 +92,14 @@ plugins = [
     { module_name = "Plugins.Welcome", enabled = true },
     # 玩家统计卡（Plugins/Stats.py）：配置在 Data/MCStats.toml
     { module_name = "Plugins.Stats", enabled = true },
-    { module_name = "Plugins.Kebiao", enabled = false },
+    { module_name = "Plugins.Kebiao", enabled = true },
     { module_name = "Plugins.EventFilter", enabled = true },
 ]
 
 [[tool.nonebot.adapters]]
 name = "Minecraft"
 module_name = "nonebot.adapters.minecraft"
+
 [[tool.nonebot.adapters]]
 name = "OneBot V11"
 module_name = "nonebot.adapters.onebot.v11"

@@ -163,6 +163,12 @@ def main():
     register_adapters(driver, config_manager.nonebot_config.get('adapters', []))
 
     nonebot.load_plugin('Scripts.Plugins.Extensions')
+
+    # 多适配器共存时修正 Matcher.send 的 bot 选择（必须在插件加载前安装）
+    from Scripts.MultiBot import apply as apply_multibot_patch
+
+    apply_multibot_patch()
+
     load_plugins(config_manager.nonebot_config.get('plugins', []))
 
     if bot_config.webui.enabled:

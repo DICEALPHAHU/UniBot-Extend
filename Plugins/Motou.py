@@ -6,6 +6,7 @@
 
 from httpx import AsyncClient
 from nonebot import on_message
+from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageSegment
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import Rule
@@ -17,7 +18,7 @@ from .HelpEntry import register_help_commands
 MOTOU_API_URL = 'https://uapis.cn/api/v1/image/motou'
 
 
-async def motou_check(event: GroupMessageEvent) -> bool:
+async def motou_check(event: Event) -> bool:
     """匹配规则：消息包含「摸摸」并且有 @ 人。"""
     text = event.message.extract_plain_text()
     has_motou = '摸摸' in text
@@ -51,7 +52,7 @@ async def fetch_motou_image(target_qq: str) -> bytes | None:
 
 
 @motou_cmd.handle()
-async def handle_motou(event: GroupMessageEvent):
+async def handle_motou(event: Event):
     # 提取被 @ 的第一个 QQ
     target_qq = next(
         (seg.data.get('qq') for seg in event.message if seg.type == 'at'),

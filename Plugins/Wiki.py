@@ -14,11 +14,14 @@ import difflib
 import re
 import time
 import urllib.parse
+from io import BytesIO
 
 from httpx import AsyncClient
-from nonebot import on_command
+from nonebot import on_command, on_message
+from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot.params import CommandArg
+from Scripts.CommandRules import command_args, command_rule
 from nonebot.plugin import PluginMetadata
 
 from .HelpEntry import register_help_commands
@@ -52,8 +55,9 @@ WIKI_GOOD_SCORE = 40
 WIKI_QUESTION_MARKERS = ('有哪些', '有什么', '是什么', '有什么用', '怎么获得', '怎么用', '如何获得', '如何', '为什么')
 
 # priority=0：必须小于 Scripts.Plugins.Events 的 priority=1（它以 block=True 截断事件）。
-wiki_cmd = on_command('wiki', priority=0, block=True)
-
+wiki_cmd = on_message(
+    rule=command_rule(('wiki',)), block=True, priority=0
+)
 # 关键词 -> (写入时间, (页面, 实际使用的关键词))；页面为 None 表示确认查无此词
 _cache: dict[str, tuple[float, tuple[dict | None, str]]] = {}
 _CACHE_MISS = object()
@@ -241,7 +245,11 @@ async def search_wiki_page(keyword: str) -> tuple[dict | None, str]:
 
 
 async def fetch_wiki_thumbnail(source: str) -> bytes | None:
-    """下载缩略图，失败或超过体积上限时返回 None（此时只发文字）。"""
+    """下载缩略图并缩放到合适尺寸；失败或过大时返回 None（此时只发文字）。
+
+    Wiki 的缩略图常是 1000x1000 级别的大图，直接发出去会占满聊天窗口，
+    这里限制最大边长并把透明背景压成白底（QQ 里黑底图不好看）。
+    """
     async with AsyncClient(timeout=WIKI_TIMEOUT, follow_redirects=True) as client:
         response = await client.get(source, headers={'User-Agent': WIKI_USER_AGENT})
         if response.status_code != 200:
@@ -249,7 +257,39 @@ async def fetch_wiki_thumbnail(source: str) -> bytes | None:
         content = response.content
     if len(content) > WIKI_MAX_IMAGE_BYTES:
         return None
-    return content
+    return _shrink_image(content)
+
+
+# 图片最大边长（像素）：超过就等比缩小
+WIKI_IMAGE_MAX_SIDE = 320
+
+
+def _shrink_image(content: bytes) -> bytes | None:
+    """把图片等比缩到最大边长以内，透明背景铺白底；失败返回原图。"""
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(content)) as image:
+            image.load()
+            if image.mode in ('RGBA', 'LA', 'P'):
+                # 透明背景铺白，QQ 里黑底很难看
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                rgba = image.convert('RGBA')
+                background.paste(rgba, mask=rgba.split()[-1])
+                image = background
+            elif image.mode != 'RGB':
+                image = image.convert('RGB')
+
+            if max(image.size) > WIKI_IMAGE_MAX_SIDE:
+                ratio = WIKI_IMAGE_MAX_SIDE / max(image.size)
+                new_size = (max(1, int(image.width * ratio)), max(1, int(image.height * ratio)))
+                image = image.resize(new_size, Image.LANCZOS)
+
+            buffer = BytesIO()
+            image.save(buffer, format='PNG', optimize=True)
+            return buffer.getvalue()
+    except Exception:
+        return content
 
 
 def build_wiki_link(title: str) -> str:
@@ -292,7 +332,8 @@ async def build_wiki_reply(page: dict, keyword: str, used: str) -> Message:
 
 
 @wiki_cmd.handle()
-async def handle_wiki(args: Message = CommandArg()):
+async def handle_wiki(event: Event):
+    args = Message(command_args(event, ('wiki',)))
     keyword = args.extract_plain_text().strip()
     if not keyword:
         await wiki_cmd.finish('请输入要查询的词条。示例：.wiki lava chicken')

@@ -21,19 +21,19 @@ from pathlib import Path
 from typing import Any
 
 from httpx import AsyncClient
-from nonebot import get_driver, on_command, on_message, on_notice
+from nonebot import get_driver, on_message, on_notice
+from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import (
     Bot,
     GroupUploadNoticeEvent,
     Message,
-    MessageEvent,
     MessageSegment,
 )
 from nonebot.log import logger
-from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
 from PIL import Image, ImageDraw, ImageFont
 
+from Scripts.CommandRules import command_args, command_rule, ev_group_id, ev_user_id
 from .HelpEntry import register_help_commands
 
 # ===== 课表基础 =====
@@ -700,29 +700,41 @@ NO_DATA_TEXT = '还没导入课表喵～把教务导出的「学生个人课表_
 # ===== 指令 =====
 
 
-def _platform_of(event: MessageEvent) -> str:
+def _platform_of(event: Event) -> str:
     return 'qq'
 
 
-def _user_id_of(event: MessageEvent) -> str:
-    return str(event.user_id)
+def _user_id_of(event: Event) -> str:
+    return str(ev_user_id(event))
 
 
-def _plain(event: MessageEvent) -> str:
+def _plain(event: Event) -> str:
     return event.get_plaintext().strip()
 
 
-schedule_cmd = on_command('课表', priority=0, block=True)
-week_cmd = on_command('周课表', priority=0, block=True)
-today_cmd = on_command('今日课表', priority=0, block=True)
-tomorrow_cmd = on_command('明日课表', priority=0, block=True)
-next_cmd = on_command('下一节课', priority=0, block=True)
-help_cmd = on_command('课表帮助', priority=0, block=True)
-term_cmd = on_command('课表开学', priority=0, block=True)
-clear_cmd = on_command('课表清除', priority=0, block=True)
-remind_cmd = on_command('上课提醒', priority=0, block=True)
+def _kebiao_args(event: Event, names: tuple) -> str:
+    """取命令参数（跨适配器，等价于 CommandArg 的纯文本提取）。"""
+    return command_args(event, names)
 
 
+_NAMES_SCHEDULE_CMD = ('课表',)
+schedule_cmd = on_message(rule=command_rule(_NAMES_SCHEDULE_CMD), priority=0, block=True)
+_NAMES_WEEK_CMD = ('周课表',)
+week_cmd = on_message(rule=command_rule(_NAMES_WEEK_CMD), priority=0, block=True)
+_NAMES_TODAY_CMD = ('今日课表',)
+today_cmd = on_message(rule=command_rule(_NAMES_TODAY_CMD), priority=0, block=True)
+_NAMES_TOMORROW_CMD = ('明日课表',)
+tomorrow_cmd = on_message(rule=command_rule(_NAMES_TOMORROW_CMD), priority=0, block=True)
+_NAMES_NEXT_CMD = ('下一节课',)
+next_cmd = on_message(rule=command_rule(_NAMES_NEXT_CMD), priority=0, block=True)
+_NAMES_HELP_CMD = ('课表帮助',)
+help_cmd = on_message(rule=command_rule(_NAMES_HELP_CMD), priority=0, block=True)
+_NAMES_TERM_CMD = ('课表开学',)
+term_cmd = on_message(rule=command_rule(_NAMES_TERM_CMD), priority=0, block=True)
+_NAMES_CLEAR_CMD = ('课表清除',)
+clear_cmd = on_message(rule=command_rule(_NAMES_CLEAR_CMD), priority=0, block=True)
+_NAMES_REMIND_CMD = ('上课提醒',)
+remind_cmd = on_message(rule=command_rule(_NAMES_REMIND_CMD), priority=0, block=True)
 def _week_from_args(text: str, data: dict[str, Any]) -> int | None:
     numbers = re.findall(r'\d+', text)
     if numbers:
@@ -731,7 +743,8 @@ def _week_from_args(text: str, data: dict[str, Any]) -> int | None:
 
 
 @schedule_cmd.handle()
-async def handle_schedule(event: MessageEvent, args: Message = CommandArg()):
+async def handle_schedule(event: Event):
+    args = Message(_kebiao_args(event, _NAMES_SCHEDULE_CMD))
     platform, user_id = _platform_of(event), _user_id_of(event)
     data = load_user(platform, user_id)
     if not data:
@@ -746,7 +759,8 @@ async def handle_schedule(event: MessageEvent, args: Message = CommandArg()):
 
 
 @week_cmd.handle()
-async def handle_week(event: MessageEvent, args: Message = CommandArg()):
+async def handle_week(event: Event):
+    args = Message(_kebiao_args(event, _NAMES_SCHEDULE_CMD))
     platform, user_id = _platform_of(event), _user_id_of(event)
     data = load_user(platform, user_id)
     if not data:
@@ -758,7 +772,7 @@ async def handle_week(event: MessageEvent, args: Message = CommandArg()):
 
 
 @today_cmd.handle()
-async def handle_today(event: MessageEvent):
+async def handle_today(event: Event):
     platform, user_id = _platform_of(event), _user_id_of(event)
     data = load_user(platform, user_id)
     if not data:
@@ -768,7 +782,7 @@ async def handle_today(event: MessageEvent):
 
 
 @tomorrow_cmd.handle()
-async def handle_tomorrow(event: MessageEvent):
+async def handle_tomorrow(event: Event):
     platform, user_id = _platform_of(event), _user_id_of(event)
     data = load_user(platform, user_id)
     if not data:
@@ -778,7 +792,7 @@ async def handle_tomorrow(event: MessageEvent):
 
 
 @next_cmd.handle()
-async def handle_next(event: MessageEvent):
+async def handle_next(event: Event):
     platform, user_id = _platform_of(event), _user_id_of(event)
     data = load_user(platform, user_id)
     if not data:
@@ -792,7 +806,8 @@ async def handle_help():
 
 
 @term_cmd.handle()
-async def handle_term(event: MessageEvent, args: Message = CommandArg()):
+async def handle_term(event: Event):
+    args = Message(_kebiao_args(event, _NAMES_SCHEDULE_CMD))
     platform, user_id = _platform_of(event), _user_id_of(event)
     data = load_user(platform, user_id)
     if not data:
@@ -806,7 +821,7 @@ async def handle_term(event: MessageEvent, args: Message = CommandArg()):
 
 
 @clear_cmd.handle()
-async def handle_clear(event: MessageEvent):
+async def handle_clear(event: Event):
     platform, user_id = _platform_of(event), _user_id_of(event)
     path = _user_file(platform, user_id)
     if not path.exists():
@@ -817,7 +832,8 @@ async def handle_clear(event: MessageEvent):
 
 
 @remind_cmd.handle()
-async def handle_remind(event: MessageEvent, args: Message = CommandArg()):
+async def handle_remind(event: Event):
+    args = Message(_kebiao_args(event, _NAMES_SCHEDULE_CMD))
     platform, user_id = _platform_of(event), _user_id_of(event)
     data = load_user(platform, user_id)
     if not data:
@@ -883,7 +899,7 @@ def _is_schedule_name(name: str | None) -> bool:
     return Path(name or '').suffix.lower() in SCHEDULE_SUFFIXES
 
 
-async def _store_schedule(event: MessageEvent, bot: Bot, filename: str, content: bytes) -> str:
+async def _store_schedule(event: Event, bot: Bot, filename: str, content: bytes) -> str:
     """解析上传的课表并保存，返回给用户的回执文本。"""
     platform, user_id = _platform_of(event), _user_id_of(event)
     suffix = Path(filename or 'schedule.xls').suffix.lower()
@@ -907,7 +923,7 @@ async def _store_schedule(event: MessageEvent, bot: Bot, filename: str, content:
         'user_id': user_id,
         'platform': platform,
         'message_type': event.message_type,
-        'group_id': str(event.group_id) if getattr(event, 'group_id', None) else '',
+        'group_id': str(ev_group_id(event)) if getattr(event, 'group_id', None) else '',
         'term': parsed['term'],
         'term_start': DEFAULT_TERM_START,
         'courses': parsed['courses'],
@@ -955,7 +971,7 @@ async def handle_group_file(event: GroupUploadNoticeEvent, bot: Bot):
     url = str(getattr(file_info, 'url', '') or '').strip()
     if not url:
         try:
-            result = await bot.call_api('get_group_file_url', group_id=event.group_id, file_id=file_info.id)
+            result = await bot.call_api('get_group_file_url', group_id=ev_group_id(event), file_id=file_info.id)
             url = str((result or {}).get('url') or '').strip()
         except Exception:
             url = ''
@@ -968,7 +984,7 @@ async def handle_group_file(event: GroupUploadNoticeEvent, bot: Bot):
 
 
 @file_message.handle()
-async def handle_file_message(event: MessageEvent, bot: Bot):
+async def handle_file_message(event: Event, bot: Bot):
     """私聊 / 群里直接发文件时触发。"""
     segment = next((item for item in event.get_message() if item.type == 'file'), None)
     if segment is None:

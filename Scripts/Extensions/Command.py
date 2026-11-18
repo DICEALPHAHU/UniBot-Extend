@@ -14,6 +14,7 @@ from functools import wraps
 from typing import Any, Generic, TypeVar
 
 from arclet.alconna import Alconna, Args, MultiVar, Subcommand
+from nonebot.adapters import Event
 from nonebot.exception import FinishedException
 from nonebot.matcher import MatcherSource
 from nonebot_plugin_alconna import on_alconna
@@ -43,6 +44,78 @@ ImageHandler = Callable[..., Awaitable[bytes]]
 
 # 父命令类型参数：子命令用它标注宿主命令类型，从而获得父命令方法提示
 ParentT = TypeVar('ParentT', bound='Command')
+
+
+def _bot_for_event(event: Event):
+    """按事件所属适配器返回对应 bot，避免多适配器下用错通道。
+
+    NoneBot 在同时挂载 OneBot 与 QQ 官方适配器时，``matcher.finish()``
+    依赖上下文推断 bot，两个 bot 同群时会选错，导致官方 QQ 的消息被
+    发到 OneBot 通道（报 ``result: 120``）。这里按事件模块名精确匹配。
+    """
+    import nonebot
+
+    module = type(event).__module__
+    try:
+        for candidate in nonebot.get_bots().values():
+            bot_module = type(candidate).__module__
+            if module.startswith('nonebot.adapters.qq') and bot_module.startswith('nonebot.adapters.qq'):
+                return candidate
+            if module.startswith('nonebot.adapters.onebot') and bot_module.startswith('nonebot.adapters.onebot'):
+                return candidate
+    except Exception:
+        return None
+    return None
+
+
+async def _send_by_event(event: Event, message) -> None:
+    """把消息发到事件来源对应的 bot；失败时退回 matcher 默认行为。"""
+    bot = _bot_for_event(event)
+    if bot is None:
+        return
+    try:
+        await bot.send(event=event, message=message)
+    except Exception:
+        # 交给上层原逻辑处理（例如图片字节需特殊包装）
+        raise
+
+
+async def _finish(matcher, event, message) -> None:
+    """统一的结束发送：按事件来源选 bot，拿不到时退回 matcher.finish。
+
+    多适配器环境下 ``matcher.finish()`` 可能选错通道（官方 QQ 的消息被发到
+    OneBot，报 ``result: 120``），因此优先显式指定 bot 发送。
+
+    注意：handler 签名里不一定有 ``event`` 参数（例如 ``HelpCommand.handler``
+    只接收 ``command``），所以从 NoneBot 的默认状态里兜底取。
+    """
+    if event is None:
+        # NoneBot 在 matcher 上下文里维护了 current_event / current_bot
+        try:
+            from nonebot.internal.matcher.matcher import current_event
+
+            event = current_event.get()
+        except Exception:
+            event = None
+
+    bot = _bot_for_event(event) if event is not None else None
+    if bot is None:
+        await matcher.finish(message)
+        return
+    from nonebot.exception import FinishedException as _Fin
+
+    try:
+        logger.info(f'[CommandReply] 用 {type(bot).__name__} 回复事件 {type(event).__name__}')
+        # UniMessage 是跨适配器封装，需 export 成目标适配器的原生消息段
+        payload = message
+        # export(bot) 是协程，必须 await 才能拿到原生 Message
+        if isinstance(message, UniMessage):
+            payload = await message.export(bot)
+        await bot.send(event=event, message=payload)
+        logger.info('[CommandReply] 发送成功')
+    except Exception as error:
+        exception_logger.error(f'[CommandReply] 发送失败：{error}')
+    raise _Fin()
 
 
 def _format_path(extension_id: str, path: list[str]) -> str:
@@ -404,9 +477,17 @@ class CommandManager:
         @wraps(target)
         async def dispatched(*args, **kwargs):
             try:
+                from nonebot.internal.matcher.matcher import current_event as _ce
+
+                event = _ce.get()
+            except Exception:
+                event = kwargs.get('event') or next(
+                    (arg for arg in args if isinstance(arg, Event)), None
+                )
+            try:
                 # 异步生成器：不 await，逐项收集后转多行文本发送
                 if inspect.isasyncgenfunction(target):
-                    await matcher.finish(await turn_message_text(target(*args, **kwargs)))
+                    await _finish(matcher, event, await turn_message_text(target(*args, **kwargs)))
                     return
                 result = await target(*args, **kwargs)
                 if result is None:
@@ -417,13 +498,13 @@ class CommandManager:
                 # 图片处理器返回 PNG 字节，包装为图片消息发送
                 if isinstance(message, bytes):
                     message = UniMessage(Image(raw=message))
-                return await matcher.finish(message)
+                return await _finish(matcher, event, message)
             except FinishedException:
                 pass
             except Exception as error:
                 # 渲染/处理失败：记录日志并发送错误提示，不让异常中断机器人
                 exception_logger.error(f'Command {command.name} handler failed: {error}')
-                await matcher.finish(f'命令执行失败：{error}')
+                await _finish(matcher, event, f'命令执行失败：{error}')
 
         return dispatched
 

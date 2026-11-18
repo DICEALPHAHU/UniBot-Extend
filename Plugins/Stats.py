@@ -29,9 +29,14 @@ from pathlib import Path
 from typing import Any
 
 from httpx import AsyncClient
-from nonebot import on_command
-from nonebot.adapters.onebot.v11 import Message, MessageEvent, MessageSegment
-from nonebot.params import CommandArg
+from nonebot import on_message
+from nonebot.adapters import Event
+from nonebot.adapters.onebot.v11 import Message, MessageSegment
+
+from nonebot_plugin_alconna.uniseg import Image as UniImage
+from nonebot_plugin_alconna.uniseg import UniMessage
+
+from Scripts.CommandRules import command_args, command_rule
 from nonebot.plugin import PluginMetadata
 from PIL import Image, ImageDraw, ImageFont
 
@@ -430,12 +435,23 @@ ADVANCE_CACHE_SECONDS = 12 * 3600
 ADVANCE_SNAPSHOT = Path('Data/MCStats/advancements.json')
 _advance_cache: dict[Path | None, tuple[float, set[str]]] = {}
 
+# 已废弃的成就 id：旧版本导航石成就在 nether 下，新版本迁到了 adventure 下。
+# 老玩家的存档里会残留 nether 那条记录，混进并集后会让「总数」虚高，
+# 结果是下一个成就的人永远差一格 —— 这里按「旧 id -> 新 id」映射，旧 id 一律剔除，
+# 只要新 id 已解锁就视为这条已拿到（老玩家不会因为版本迁移而丢进度）。
+ADVANCE_LEGACY: dict[str, str] = {
+    'minecraft:nether/use_lodestone': 'minecraft:adventure/use_lodestone',
+}
+
 
 def _advancement_ids(profile: Profile) -> set[str]:
-    """全体玩家成就 id 的并集（不含配方），当作「总成就数」。
+    """全体玩家成就 id 的并集（不含配方、不含废弃 id），当作「总成就数」。
 
     直接用服务器 jar 里的成就表最准，但 Purpur 的 jar 是 patch 包，取不到；
     拿几百个玩家的记录求并集，实际就是完整的原版成就集。结果会落盘一份做兜底。
+
+    并集里会混进旧版本残留的 id（老存档不清理），这些 id 在新版本里不会再被触发，
+    停在上面的人永远补不满分母，所以统一按 ADVANCE_LEGACY 剔除。
     """
     now = time.time()
     key = profile.advancements
@@ -451,6 +467,7 @@ def _advancement_ids(profile: Profile) -> set[str]:
             except (OSError, json.JSONDecodeError):
                 continue
             ids.update(name for name in data if name != 'DataVersion' and 'recipes' not in name)
+        ids.difference_update(ADVANCE_LEGACY)
         if ids:
             try:
                 ADVANCE_SNAPSHOT.parent.mkdir(parents=True, exist_ok=True)
@@ -465,6 +482,7 @@ def _advancement_ids(profile: Profile) -> set[str]:
             ids = set(json.loads(ADVANCE_SNAPSHOT.read_text('Utf-8')))
         except (OSError, json.JSONDecodeError):
             ids = set()
+        ids.difference_update(ADVANCE_LEGACY)
 
     _advance_cache[key] = (now, ids)
     return ids
@@ -478,11 +496,14 @@ def _player_advancements(profile: Profile, uuid: str, known: set[str]) -> int | 
         data = json.loads((profile.advancements / f'{uuid}.json').read_text('Utf-8'))
     except (OSError, json.JSONDecodeError):
         return None
-    return sum(
-        1
-        for name, value in data.items()
-        if name in known and isinstance(value, dict) and value.get('done')
-    )
+    done = {
+        name for name, value in data.items() if isinstance(value, dict) and value.get('done')
+    }
+    # 版本迁移兼容：旧 id 解锁过的，补算成对应的新 id（新 id 未记录也不算丢进度）
+    for legacy, current in ADVANCE_LEGACY.items():
+        if legacy in done and current in known:
+            done.add(current)
+    return sum(1 for name in done if name in known)
 
 
 # ===== Plan =====
@@ -1044,22 +1065,68 @@ def build_text(stats: PlayerStats) -> str:
 
 # ===== 指令 =====
 
-stats_cmd = on_command(
-    'stats', aliases={'stat', 'stats卡', '统计', '数据', 'mystats'}, priority=0, block=True
-)
+_STATS_NAMES = ('stats',)
+_STATS_ALIASES = ('stat', 'stats卡', '统计', '数据', 'mystats')
+
+# on_message + 正则：on_command/CommandArg 是 OneBot 专用，
+# 官方 QQ 事件拿不到 CommandArg 注入，handler 会被静默跳过。
+stats_cmd = on_message(rule=command_rule(_STATS_NAMES, _STATS_ALIASES), priority=0, block=True)
 
 
 def _bound_player(user_id: str) -> str | None:
-    """取某个 QQ 绑定的第一个游戏名。"""
+    """取某个 QQ 绑定的第一个游戏名。
+
+    兼容两种情况：
+    - OneBot 传入真实 QQ 号（``3143723897``），PlayerService 里键为 ``qq_api:<QQ号>``；
+    - QQ 官方传入 ``openid``（``89361C50...``），无法直接对应，
+      先查人工维护的 openid→QQ 映射表（``Data/OpenidMap.json``）。
+    """
     service = Globals.player_service
     if service is None:
         return None
-    players = service.players.get(str(user_id)) or []
-    return players[0] if players else None
+    uid = str(user_id)
+
+    # 直接命中（OneBot 或已映射过的键）
+    for key in (uid, f'qq_api:{uid}'):
+        players = service.players.get(key) or []
+        if players:
+            return players[0]
+
+    # openid -> QQ 号 映射（人工维护，见 Data/OpenidMap.json）
+    mapped = _openid_to_qq(uid)
+    if mapped:
+        for key in (mapped, f'qq_api:{mapped}'):
+            players = service.players.get(key) or []
+            if players:
+                return players[0]
+        return None
+
+    # 最后兜底：PlayerService 可能支持按任意键模糊查找
+    try:
+        for key, players in service.players.items():
+            if key.endswith(uid) and players:
+                return players[0]
+    except Exception:
+        pass
+    return None
+
+
+def _openid_to_qq(openid: str) -> str | None:
+    """读 Data/OpenidMap.json：{"<openid>": "<QQ号>"}。"""
+    path = Path('Data/OpenidMap.json')
+    if not path.exists():
+        return None
+    try:
+        mapping = json.loads(path.read_text('Utf-8'))
+    except Exception:
+        return None
+    value = mapping.get(openid)
+    return str(value) if value else None
 
 
 @stats_cmd.handle()
-async def handle_stats(event: MessageEvent, args: Message = CommandArg()):
+async def handle_stats(event: Event):
+    args = command_args(event, _STATS_NAMES, _STATS_ALIASES)
     """解析参数并返回统计卡片。"""
     settings = refresh_settings()
 
@@ -1083,7 +1150,17 @@ async def handle_stats(event: MessageEvent, args: Message = CommandArg()):
             await stats_cmd.finish(f'QQ {target} 还没有绑定游戏名，可以让他先发 .bound <游戏名>。')
 
     if not target:
-        target = _bound_player(str(event.user_id))
+        # OneBot 有 user_id，官方 QQ 只有 author.member_openid / user_openid
+        _uid = getattr(event, 'user_id', None)
+        if _uid is None:
+            _author = getattr(event, 'author', None)
+            _uid = (
+                getattr(_author, 'member_openid', None)
+                or getattr(_author, 'user_openid', None)
+                or getattr(event, 'get_user_id', lambda: '')()
+            )
+        logger.info(f'[Stats] 解析用户 {_uid} -> 绑定玩家 {_bound_player(str(_uid))!r}')
+        target = _bound_player(str(_uid))
         if not target:
             await stats_cmd.finish('你还没有绑定游戏名，先发 .bound <游戏名>，或者直接 .stats <玩家名>。')
 
@@ -1101,7 +1178,7 @@ async def handle_stats(event: MessageEvent, args: Message = CommandArg()):
         )
     # 没开图片模式就直接发文字，省得为一个字段渲染整张图
     if not getattr(config.image, 'mode', True):
-        await stats_cmd.finish(Message(MessageSegment.text(build_text(stats))))
+        await stats_cmd.finish(build_text(stats))
 
     skin = await fetch_skin(profile, stats.uuid, stats.name)
     card = None
@@ -1112,11 +1189,11 @@ async def handle_stats(event: MessageEvent, args: Message = CommandArg()):
         # finish() 会抛控制流异常，绝不能放在 try 里
         logger.warning(f'玩家统计：卡片渲染失败（{error}），改发文字。')
     if card is None:
-        await stats_cmd.finish(Message(MessageSegment.text(build_text(stats))))
-    await stats_cmd.finish(Message(MessageSegment.image(card)))
+        await stats_cmd.finish(build_text(stats))
+    await stats_cmd.finish(UniMessage(UniImage(raw=card)))
 
 
-reload_cmd = on_command('statsreload', aliases={'统计重载'}, priority=0, block=True)
+reload_cmd = on_message(rule=command_rule(('statsreload',), ('统计重载',)), priority=0, block=True)
 
 
 @reload_cmd.handle()

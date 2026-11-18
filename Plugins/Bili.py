@@ -27,7 +27,13 @@ from bilibili_api.video import (
     VideoQuality,
 )
 from httpx import AsyncClient
-from nonebot import get_bots, get_driver, logger, on_command
+from nonebot import get_bots, get_driver, logger, on_command, on_message
+from nonebot.adapters import Event
+from nonebot.rule import Rule
+
+from Scripts.CommandRules import command_rule, ev_group_id, superuser_rule
+from Scripts.Sender import get_group_id
+
 from nonebot.adapters.onebot.v11 import (
     Bot,
     GroupMessageEvent,
@@ -50,7 +56,7 @@ from .HelpEntry import register_help_commands
 # 核心路径配置
 # ★ 必须落在「UniBot 与 NapCat 两个容器里路径完全相同」的共享目录上，
 #   否则 NapCat 收到 file:// 路径后在自己容器里找不到文件（ENOENT）。
-#   宿主机 /srv/napcat/config/unibot-temp 同时挂给了两个容器。
+#   宿主机 /srv/napcat/config/unibot-temp 同时挂给两个容器，NapCat 发送时才能读到该路径。
 _SHARED_TEMP = Path('/app/napcat/config/unibot-temp')
 try:
     (_SHARED_TEMP / 'Bili').mkdir(parents=True, exist_ok=True)
@@ -1472,14 +1478,33 @@ async def _send_video_to_group(bot, group_info: str, video_path: Path, title: st
         asyncio.create_task(_delayed_unlink(named_path))
 
 
-async def _send_video_to_current_group(bot, group_id: int, video_path: Path, title: str, bvid: str = '') -> None:
+async def _send_video_to_current_group(
+    bot, group_id, video_path: Path, title: str, bvid: str = '', event=None
+) -> None:
     """把本地视频发送到指令所在的群（.bv 用）。
+
+    - **OneBot/NapCat**：沿用原有 upload_group_file / send_group_msg 两种模式；
+    - **QQ 官方机器人**：走 post_group_upload + send_to_group（需 event_id 被动回复）。
 
     同样按「<日期>-每日新闻-<B站原标题>.mp4」命名；失败时向上抛出，调用方退回发快照。
     """
     named_path = _build_named_video(video_path, title, bvid)
     size_mb = named_path.stat().st_size / 1024 / 1024
     logger.info(f'正在向群 {group_id} 发送视频：{named_path.name}（{size_mb:.2f}MB）')
+
+    # QQ 官方机器人分支：文件上传后发送
+    if event is not None and type(event).__module__.startswith('nonebot.adapters.qq'):
+        from Scripts.Sender import send_group_video
+
+        try:
+            ok = await send_group_video(bot, event, named_path)
+            if not ok:
+                raise RuntimeError('官方 QQ 视频发送返回失败')
+            logger.info(f'视频已推送至群 {group_id}：{named_path.name}（方式：qq_official）')
+        finally:
+            asyncio.create_task(_delayed_unlink(named_path))
+        return
+
     try:
         if BILI_VIDEO_SEND_MODE == 'file':
             await bot.call_api(
@@ -1689,14 +1714,9 @@ async def _wait_scan_login(key: str, group_id: int | None) -> None:
     logger.info('B站登录二维码已过期，本次扫码结束（不会在群里提示）')
 
 
-bili_login = on_command(
-    'bililogin',
-    aliases={'blogin', 'bilogin'},
-    block=True,
-    priority=0,
+bili_login = on_message(
+    rule=command_rule(('bililogin',)), block=True, priority=0
 )
-
-
 @bili_login.handle()
 async def handle_bili_login(bot: Bot, event: MessageEvent):
     """生成 B 站扫码登录二维码：写文件 + 控制台 ASCII，群里只回提示。
@@ -1733,7 +1753,7 @@ async def handle_bili_login(bot: Bot, event: MessageEvent):
             )
         )
 
-    group_id = event.group_id if isinstance(event, GroupMessageEvent) else None
+    group_id = ev_group_id(event) if isinstance(event, GroupMessageEvent) else None
     _login_task = asyncio.create_task(_wait_scan_login(key, group_id))
     await bili_login.finish(
         f'登录二维码已生成，有效期 {BiliCredential.QR_TTL_SECONDS} 秒。\n'
@@ -1747,7 +1767,9 @@ async def handle_bili_login(bot: Bot, event: MessageEvent):
 # 1. 手动触发监控
 # 注意 priority=0：Scripts.Plugins.Events 在 priority 1 以 block=True 截断事件，
 # 本文件原先使用默认 priority=1，会导致这些指令永远不会被评估。
-manual_watch = on_command('biliwatch', permission=SUPERUSER, block=True, priority=0)
+manual_watch = on_message(
+    rule=command_rule(('biliwatch',)) & superuser_rule(), block=True, priority=0
+)
 @manual_watch.handle()
 async def handle_manual_watch():
     # 注意：send() 不抛控制流异常，放 try 内是安全的；
@@ -1778,17 +1800,57 @@ async def handle_manual_watch():
     )
 
 # 2. BV解析指令
-test_vsdu = on_command('bv', block=True, priority=0)
-@test_vsdu.handle()
-async def handle_test_vsdu(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
-    if not BILI_WATCHER_ENABLED:
-        await test_vsdu.finish('插件已禁用！')
+# 说明：这里不用 on_command/CommandArg —— 它们是 OneBot 专用，QQ 官方适配器的
+# 事件拿不到 CommandArg 注入，handler 会被静默跳过。改成 on_message + 正则，
+# 两条链路（OneBot / QQ 官方）都能触发，命令前缀与 OneBot 保持一致。
+_BV_CMD_RE = re.compile(r'^[' + re.escape(''.join(getattr(config, 'command_start', ['/', '.', '#']))) + r']?bv\s*(?P<arg>.*)$', re.S)
 
-    raw_text = args.extract_plain_text().strip()
+
+def _bv_command_rule(event: Event) -> bool:
+    """匹配「/bv 链接」或「bv 链接」，兼容任意适配器。"""
+    try:
+        text = event.get_plaintext().strip()
+    except Exception:
+        return False
+    if not text:
+        return False
+    return bool(_BV_CMD_RE.match(text))
+
+
+test_vsdu = on_message(rule=Rule(_bv_command_rule), block=True, priority=0)
+
+
+def _pick_bot(event: Event):
+    """按事件所属适配器返回对应 bot。"""
+    module = type(event).__module__
+    for candidate in get_bots().values():
+        bot_module = type(candidate).__module__
+        if module.startswith('nonebot.adapters.qq') and bot_module.startswith('nonebot.adapters.qq'):
+            return candidate
+        if module.startswith('nonebot.adapters.onebot') and bot_module.startswith('nonebot.adapters.onebot'):
+            return candidate
+    raise RuntimeError('找不到与事件匹配的 bot')
+
+
+@test_vsdu.handle()
+async def handle_test_vsdu(event: Event):
+    # 多适配器环境下 handler 注入的 bot 可能来自另一条链路，
+    # 这里按事件自身的 adapter 精确取，保证「谁收到谁回复」。
+    bot = _pick_bot(event)
+    _t0 = time.time()
+    _eid = getattr(event, 'event_id', None)
+    logger.info(f'[Bili] 收到 /bv，event_id={_eid}')
+    if not BILI_WATCHER_ENABLED:
+        await bot.send(event=event, message='插件已禁用！')
+        return
+
+    matched = _BV_CMD_RE.match(event.get_plaintext().strip())
+    raw_text = (matched.group('arg') if matched else '').strip()
     if not raw_text:
-        await test_vsdu.finish(
-            '请输入B站视频链接或 BV 号（支持 b23.tv 短链，也可以直接粘贴分享文案）！'
+        await bot.send(
+            event=event, message='请输入B站视频链接或 BV 号（支持 b23.tv 短链，也可以直接粘贴分享文案）！'
         )
+        return
     # 支持直接粘贴「【视频标题】https://b23.tv/xxxx」这种分享文案
     input_url = extract_video_target(raw_text)
     if input_url != raw_text:
@@ -1797,7 +1859,7 @@ async def handle_test_vsdu(bot: Bot, event: GroupMessageEvent, args: Message = C
     # 处理短链接
     long_url = input_url
     if 'b23.tv' in input_url:
-        await test_vsdu.send('正在解析短链接...')
+        await bot.send(event=event, message='正在解析短链接...')
         long_url = await b23_to_long_url(input_url)
 
     # 精简链接
@@ -1809,7 +1871,7 @@ async def handle_test_vsdu(bot: Bot, event: GroupMessageEvent, args: Message = C
     title = await get_video_title(bv_id) if bv_id else ''
 
     # 优先发视频本体；超限/下载失败/发送失败则退回发快照
-    await test_vsdu.send('正在下载视频...')
+    await bot.send(event=event, message='正在下载视频...')
     video_path = await download_bilibili_video(bv_id) if bv_id else None
     # 裁掉开头黑场（否则 QQ 封面是一片黑）
     if video_path is not None:
@@ -1818,7 +1880,10 @@ async def handle_test_vsdu(bot: Bot, event: GroupMessageEvent, args: Message = C
     fail_reason = ''
     if video_path is not None:
         try:
-            await _send_video_to_current_group(bot, event.group_id, video_path, title, bv_id)
+            logger.info(f'[Bili] 准备发送视频，距收到命令已 {time.time() - _t0:.1f} 秒')
+            await _send_video_to_current_group(
+                bot, get_group_id(event) or '', video_path, title, bv_id, event=event
+            )
             video_sent = True
         except Exception as error:
             logger.error(f'视频发送失败，退回快照：{error}')
@@ -1830,24 +1895,36 @@ async def handle_test_vsdu(bot: Bot, event: GroupMessageEvent, args: Message = C
         fail_reason = f'视频超过 {BILI_VIDEO_MAX_MB}MB 上限或下载失败'
 
     if video_sent:
-        await test_vsdu.finish(f'视频已发送：{title}\n标准链接：{final_url}')
+        await bot.send(event=event, message=f'视频已发送：{title}\n标准链接：{final_url}')
+        return
 
     # 退回发快照
-    await test_vsdu.send('正在生成视频快照...')
+    await bot.send(event=event, message='正在生成视频快照...')
     frame_path = await get_video_frame_by_VSDU_async(final_url)
 
+    header = f'视频解析结果\n（{fail_reason}，本次仅发送快照）\n标准链接：{final_url}'
+
+    # 官方 QQ 与 OneBot 的消息段类型不同，按适配器分别构造
+    if type(event).__module__.startswith('nonebot.adapters.qq'):
+        from Scripts.Sender import send_group_image
+
+        # 先把说明文字发出去，再单独发快照（官方图文混排限制多，分开更稳）
+        await bot.send(event=event, message=header)
+        if frame_path and frame_path.exists():
+            await send_group_image(bot, event, frame_path.read_bytes())
+        return
+
     msg = Message()
-    msg += MessageSegment.text('视频解析结果\n')
+    msg += MessageSegment.text(header + '\n')
     if frame_path and frame_path.exists():
         msg += MessageSegment.image(frame_path.read_bytes())
-        msg += MessageSegment.text('\n')
-    msg += MessageSegment.text(f'（{fail_reason}，本次仅发送快照）\n')
-    msg += MessageSegment.text(f'标准链接：{final_url}')
-
-    await test_vsdu.finish(msg)
+    await bot.send(event=event, message=msg)
+    return
 
 # 3. 清理缓存指令
-clean_cache = on_command('biliclear', permission=SUPERUSER, block=True, priority=0)
+clean_cache = on_message(
+    rule=command_rule(('biliclear',)) & superuser_rule(), block=True, priority=0
+)
 @clean_cache.handle()
 async def handle_clean_cache():
     # try 只包住真正可能出错的逻辑；finish() 放在 try 之外，
@@ -1881,7 +1958,9 @@ async def handle_clean_cache():
     await clean_cache.finish(msg)
 
 # 4. 新增：查看监控状态
-status_cmd = on_command('bilistatus', permission=SUPERUSER, block=True, priority=0)
+status_cmd = on_message(
+    rule=command_rule(('bilistatus',)) & superuser_rule(), block=True, priority=0
+)
 @status_cmd.handle()
 async def handle_status():
     # 读取缓存
@@ -1907,7 +1986,9 @@ async def handle_status():
     await status_cmd.finish(status)
 
 # 5. 废弃指令（别碰，这是石山代码）
-check_uid = on_command('bilicheckuid', permission=SUPERUSER, block=True, priority=0)
+check_uid = on_message(
+    rule=command_rule(('bilicheckuid',)) & superuser_rule(), block=True, priority=0
+)
 @check_uid.handle()
 async def handle_check_uid():
     await check_uid.finish(f'该指令已废弃！\n使用 .bilistatus 查看当前监控的UP主UID：{BILI_UP_UID}')

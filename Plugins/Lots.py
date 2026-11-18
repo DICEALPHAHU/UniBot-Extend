@@ -7,10 +7,11 @@
 import random
 from datetime import datetime
 
-from nonebot import on_command
+from nonebot import on_command, on_message
+from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
-from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
+from Scripts.CommandRules import command_args, command_rule, ev_message_id, sender_name
 from .HelpEntry import register_help_commands
 
 # 抽签结果池（可自行修改）
@@ -24,28 +25,45 @@ def get_today_date() -> str:
 
 
 # priority=0：必须小于 Scripts.Plugins.Events 的 priority=1（它以 block=True 截断事件）。
-lots_cmd = on_command('cq', priority=0, block=True)
+lots_cmd = on_message(rule=command_rule(('cq',)), priority=0, block=True)
+
+
+def _reply_prefix(event) -> "Message":
+    """引用回复段：仅 OneBot 支持 MessageSegment.reply，官方 QQ 返回空。"""
+    try:
+        from nonebot.adapters.onebot.v11 import Message, MessageSegment
+
+        if type(event).__module__.startswith('nonebot.adapters.onebot'):
+            mid = ev_message_id(event)
+            if mid:
+                return Message(MessageSegment.reply(mid))
+    except Exception:
+        pass
+    from nonebot.adapters.onebot.v11 import Message as _Msg
+
+    return _Msg()
 
 
 @lots_cmd.handle()
-async def handle_lots(event: GroupMessageEvent, args: Message = CommandArg()):
+async def handle_lots(event: Event):
+    args = Message(command_args(event, ('cq',)))
     lottery_content = args.extract_plain_text().strip()
     if not lottery_content:
         await lots_cmd.finish(
-            MessageSegment.reply(event.message_id)
+            _reply_prefix(event)
             + Message('宝子要输入抽签的事宜哦～\n用法：.cq <你要求签的事情>')
         )
 
     today_date = get_today_date()
-    sender_name = event.sender.card or event.sender.nickname or '群友'
+    sender_display = sender_name(event)
     lottery_result = random.choice(LOTTERY_RESULTS)
 
     final_msg = (
         f'今天是{today_date}\n'
-        f'{sender_name} 所求事项：【{lottery_content}】\n\n'
+        f'{sender_display} 所求事项：【{lottery_content}】\n\n'
         f'结果：【{lottery_result}】'
     )
-    await lots_cmd.finish(MessageSegment.reply(event.message_id) + Message(final_msg))
+    await lots_cmd.finish(_reply_prefix(event) + Message(final_msg))
 
 
 __plugin_meta__ = PluginMetadata(

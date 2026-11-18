@@ -8,8 +8,10 @@ import random
 import time
 
 from nonebot import on_message
+from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import GroupMessageEvent
 from nonebot.plugin import PluginMetadata
+from Scripts.CommandRules import ev_user_id, sender_name
 from nonebot.rule import Rule
 from .HelpEntry import register_help_commands
 
@@ -22,7 +24,7 @@ MIN_NUM = 1
 MAX_NUM = 1000
 
 
-async def start_game_rule(event: GroupMessageEvent) -> bool:
+async def start_game_rule(event: Event) -> bool:
     """开局匹配：消息内容为「开始猜数字」。"""
     text = event.message.extract_plain_text().strip()
     return text == '开始猜数字'
@@ -34,7 +36,7 @@ start_game = on_message(rule=Rule(start_game_rule), priority=0, block=True)
 
 
 @start_game.handle()
-async def handle_start(event: GroupMessageEvent):
+async def handle_start(event: Event):
     global GAME_RUNNING, TARGET_NUM, USER_LAST_TIME
     if GAME_RUNNING:
         await start_game.finish('⚠️ 猜数字游戏正在进行中，先猜完本局再开局！')
@@ -49,7 +51,7 @@ async def handle_start(event: GroupMessageEvent):
     )
 
 
-async def guess_rule(event: GroupMessageEvent) -> bool:
+async def guess_rule(event: Event) -> bool:
     """猜测匹配：游戏进行中且消息为整条纯数字。"""
     if not GAME_RUNNING:
         return False
@@ -61,9 +63,9 @@ guess_handle = on_message(rule=Rule(guess_rule), priority=0, block=True)
 
 
 @guess_handle.handle()
-async def handle_guess(event: GroupMessageEvent):
+async def handle_guess(event: Event):
     global GAME_RUNNING
-    user_id = event.user_id
+    user_id = ev_user_id(event)
     now = time.time()
 
     # 冷却限制
@@ -73,7 +75,7 @@ async def handle_guess(event: GroupMessageEvent):
 
     text = event.message.extract_plain_text().strip()
     guess = int(text)
-    user_name = event.sender.nickname
+    user_name = sender_name(event)
 
     # 超出范围主动提示
     if guess < MIN_NUM or guess > MAX_NUM:

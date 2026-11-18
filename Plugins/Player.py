@@ -22,9 +22,11 @@ import time
 from pathlib import Path
 
 from httpx import AsyncClient
-from nonebot import on_command
+from nonebot import on_command, on_message
+from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot.params import CommandArg
+from Scripts.CommandRules import command_args, command_rule
 from nonebot.plugin import PluginMetadata
 from PIL import Image, ImageDraw, ImageFont
 
@@ -64,9 +66,9 @@ _FONT_CACHE: dict[int, ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
 # 卡片缓存：玩家键 -> (写入时间, PNG 字节)
 _CARD_CACHE: dict[str, tuple[float, bytes]] = {}
 
-player_cmd = on_command('player', priority=0, block=True)
-
-
+player_cmd = on_message(
+    rule=command_rule(('player',)), block=True, priority=0
+)
 class PlayerNotFound(Exception):
     """玩家不存在（非正版玩家或名字拼错）。"""
 
@@ -309,7 +311,8 @@ async def build_player_card(target: str) -> bytes:
 
 
 @player_cmd.handle()
-async def handle_player(args: Message = CommandArg()):
+async def handle_player(event: Event):
+    args = Message(command_args(event, ('player',)))
     target = args.extract_plain_text().strip()
     if not target:
         await player_cmd.finish('请输入玩家名或 UUID。示例：.player Notch')

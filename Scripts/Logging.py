@@ -118,7 +118,9 @@ def _patch_record(record: Record) -> None:
     record['name'] = resolve_module_alias(record['name'])
     message = record['message']
     if message:
-        record['message'] = redact_secrets(message)
+        text = redact_secrets(message)
+        # 转义尖锐号：QQ 的 <faceType=3,...> 会被 loguru 当成颜色指令并抛 ValueError
+        record['message'] = str(text).replace('<', r'\<')
 
 
 def console_format(record: Record) -> str:

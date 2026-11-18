@@ -15,15 +15,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from nonebot import on_command, on_notice
+from nonebot import on_message, on_notice
+from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import (
     Bot,
     GroupIncreaseNoticeEvent,
-    GroupMessageEvent,
     Message,
     MessageSegment,
 )
-from nonebot.permission import SUPERUSER
+from Scripts.CommandRules import command_rule, ev_group_id, ev_user_id, superuser_rule
 from nonebot.plugin import PluginMetadata
 
 from Scripts.Config import config
@@ -247,35 +247,39 @@ welcome_watcher = on_notice(priority=0, block=False)
 async def handle_group_increase(bot: Bot, event: GroupIncreaseNoticeEvent):
     """新成员入群时发欢迎。"""
     # 机器人自己被拉进群时不发
-    if event.user_id == event.self_id:
+    if ev_user_id(event) == event.self_id:
         return
     settings = refresh()
     if not settings.enabled:
         return
-    group_id = str(event.group_id)
+    group_id = str(ev_group_id(event))
     if settings.only_message_groups and group_id not in _configured_group_ids():
         return
-    message = await render(bot, event.group_id, event.user_id, settings)
+    message = await render(bot, ev_group_id(event), ev_user_id(event), settings)
     if message is None:
         return
     await welcome_watcher.send(message)
-    logger.info(f'入群欢迎：已向群 {group_id} 发送欢迎（新成员 {event.user_id}）。')
+    logger.info(f'入群欢迎：已向群 {group_id} 发送欢迎（新成员 {ev_user_id(event)}）。')
 
 
-preview_command = on_command('欢迎测试', aliases={'welcometest'}, permission=SUPERUSER, block=True, priority=0)
+preview_command = on_message(
+    rule=command_rule(('欢迎测试',), ('welcometest',)) & superuser_rule(), block=True, priority=0
+)
 
 
 @preview_command.handle()
-async def handle_preview(bot: Bot, event: GroupMessageEvent):
+async def handle_preview(bot, event: Event):
     """在当前群发一条欢迎消息，用来预览文案效果。"""
     settings = refresh()
-    message = await render(bot, event.group_id, event.user_id, settings)
+    message = await render(bot, ev_group_id(event), ev_user_id(event), settings)
     if message is None:
         await preview_command.finish('当前群没有生效的欢迎文案，请检查 Data/Welcome.toml。')
     await preview_command.finish(message)
 
 
-reload_command = on_command('欢迎重载', aliases={'welcomereload'}, permission=SUPERUSER, block=True, priority=0)
+reload_command = on_message(
+    rule=command_rule(('欢迎重载',), ('welcomereload',)) & superuser_rule(), block=True, priority=0
+)
 
 
 @reload_command.handle()
